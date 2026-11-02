@@ -37,7 +37,8 @@ jobs:
           (cd mirror && pwsh -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'" \
             && sha256sum "$name.zip" | sed 's/ \*/  /' > "$name.zip.sha256")
           (cd mirror && python -m http.server 8799 --bind 127.0.0.1 >/dev/null 2>&1 &)
-          sleep 3
+          for i in $(seq 30); do curl -sf -o /dev/null "http://127.0.0.1:8799/$name.zip" && break; sleep 1; done
+          curl -sf -o /dev/null "http://127.0.0.1:8799/$name.zip"   # fail clearly if the mirror never came up
           MEMDEX_BASE_URL=http://127.0.0.1:8799 MEMDEX_BIN_DIR="$RUNNER_TEMP/mbin" MEMDEX_NO_PATH=1 \
             pwsh -NoProfile -File install.ps1
           "$RUNNER_TEMP/mbin/memdex.exe" --version
