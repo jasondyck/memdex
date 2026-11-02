@@ -33,15 +33,31 @@ pub struct Config {
 
 pub const SHARED_LABEL: &str = "shared";
 
+/// The user's home directory: `HOME` on Unix, `USERPROFILE` on Windows.
 pub fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .find(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 pub fn expand(p: &str) -> PathBuf {
     match p.strip_prefix("~") {
-        Some(rest) => home().join(rest.trim_start_matches('/')),
+        Some(rest) => home().join(rest.trim_start_matches(['/', '\\'])),
         None => PathBuf::from(p),
     }
+}
+
+/// How Claude Code names a project's folder under ~/.claude/projects: every character
+/// that is not an ASCII letter or digit becomes `-` (`/home/a/.x` → `-home-a--x`,
+/// `C:\Users\a\proj` → `C--Users-a-proj`).
+pub fn encode_project_path(p: &Path) -> String {
+    p.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// `~/.claude/projects/-home-alex-projects-webshop/memory` → `projects-webshop`;
@@ -52,7 +68,7 @@ pub fn claude_label(memory_dir: &Path) -> String {
         .and_then(|d| d.file_name())
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let home = home().to_string_lossy().replace('/', "-");
+    let home = encode_project_path(&home());
     match dir.strip_prefix(&home) {
         Some("") => "home".into(),
         Some(rest) => rest.trim_start_matches('-').to_string(),
@@ -224,11 +240,19 @@ mod tests {
 
     #[test]
     fn claude_label_strips_home() {
-        let h = home();
-        let enc = h.to_string_lossy().replace('/', "-");
+        let enc = encode_project_path(&home());
         let p = PathBuf::from(format!("/x/.claude/projects/{enc}-projects-webshop/memory"));
         assert_eq!(claude_label(&p), "projects-webshop");
         let p = PathBuf::from(format!("/x/.claude/projects/{enc}/memory"));
         assert_eq!(claude_label(&p), "home");
+    }
+
+    #[test]
+    fn encodes_like_claude_code() {
+        assert_eq!(
+            encode_project_path(Path::new("/home/a/.herdr/x_y")),
+            "-home-a--herdr-x-y"
+        );
+        assert_eq!(encode_project_path(Path::new("C:\\Users\\a\\proj")), "C--Users-a-proj");
     }
 }

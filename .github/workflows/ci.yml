@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -20,3 +27,17 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Installer end-to-end (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked --release
+          name=memdex-x86_64-pc-windows-msvc
+          if grep -qai 'vcruntime140' target/release/memdex.exe; then echo "::error::dynamic CRT"; exit 1; fi
+          mkdir -p "mirror/$name" && cp target/release/memdex.exe "mirror/$name/"
+          (cd mirror && pwsh -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'" \
+            && sha256sum "$name.zip" | sed 's/ \*/  /' > "$name.zip.sha256")
+          (cd mirror && python -m http.server 8799 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 3
+          MEMDEX_BASE_URL=http://127.0.0.1:8799 MEMDEX_BIN_DIR="$RUNNER_TEMP/mbin" MEMDEX_NO_PATH=1 \
+            pwsh -NoProfile -File install.ps1
+          "$RUNNER_TEMP/mbin/memdex.exe" --version

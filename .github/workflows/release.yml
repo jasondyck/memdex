@@ -45,14 +45,21 @@ jobs:
             runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     env:
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Toolchain (static musl; links with Rust's bundled lld, see .cargo/config.toml)
+      - name: Toolchain (static musl via rust-lld / static-CRT msvc, see .cargo/config.toml)
         run: rustup toolchain install stable --profile minimal --target "$TARGET" && rustup default stable
       - name: Test
         run: cargo test --locked --release
@@ -60,19 +67,33 @@ jobs:
         run: cargo build --locked --release --target "$TARGET"
       - name: Package
         run: |
-          bin="target/$TARGET/release/memdex"
-          file "$bin" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'
-          "$bin" --version | grep -qx "memdex ${TAG#v}"
           name="memdex-$TARGET"
           mkdir -p "dist/$name"
+          case "$TARGET" in
+            *windows*)
+              bin="target/$TARGET/release/memdex.exe"
+              # Static CRT: the exe must not need the VC++ redistributable.
+              if grep -qai 'vcruntime140' "$bin"; then echo "::error::memdex.exe links the dynamic CRT"; exit 1; fi
+              asset="$name.zip" ;;
+            *)
+              bin="target/$TARGET/release/memdex"
+              file "$bin" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'
+              cp -r deploy "dist/$name/"
+              asset="$name.tar.gz" ;;
+          esac
+          "$bin" --version | tr -d '\r' | grep -qx "memdex ${TAG#v}"
           cp "$bin" README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
-          cp -r deploy "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" && cat "$name.tar.gz.sha256")
+          if [ "${asset##*.}" = zip ]; then
+            (cd dist && pwsh -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$asset'")
+          else
+            tar -C dist -czf "dist/$asset" "$name"
+          fi
+          (cd dist && sha256sum "$asset" | sed 's/ \*/  /' > "$asset.sha256" && cat "$asset.sha256")
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
       - name: Upload to draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
+        run: gh release upload "$TAG" "dist/$ASSET" "dist/$ASSET.sha256" --clobber
 
   publish:
     needs: build

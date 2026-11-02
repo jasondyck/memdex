@@ -228,7 +228,7 @@ impl Index {
                 continue;
             }
             self.fts.remove_path(&p.to_string_lossy());
-            if let Ok(text) = fs::read_to_string(p) {
+            if let Ok(text) = fs::read_to_string(p).map(|t| normalize_newlines(&t)) {
                 let file = stem(p);
                 let project = &labels[p];
                 let path = p.to_string_lossy();
@@ -392,7 +392,7 @@ impl Index {
 
     /// Locate a memory file by name (with or without `.md`), optionally scoped to a project.
     pub fn find_file(&self, name: &str, project: Option<&str>) -> Result<PathBuf, String> {
-        if name.contains('/') || name.contains("..") {
+        if name.contains(['/', '\\']) || name.contains("..") {
             return Err("file must be a bare name like `release-checklist`".into());
         }
         let want = name.strip_suffix(".md").unwrap_or(name);
@@ -433,6 +433,15 @@ fn passages(file: &str, c: &Chunk, pass: usize) -> Vec<String> {
         out.push(format!("{prefix}\n{cur}"));
     }
     out
+}
+
+/// Notes saved on Windows use CRLF; the parser expects `\n`.
+fn normalize_newlines(t: &str) -> String {
+    if t.contains('\r') {
+        t.replace("\r\n", "\n")
+    } else {
+        t.to_string()
+    }
 }
 
 fn stem(p: &Path) -> String {
@@ -697,7 +706,7 @@ fn split_long(s: &str, max: usize, target: usize) -> Vec<String> {
 /// Return a file's text without frontmatter, or only the sections whose heading
 /// contains `section` (case-insensitive), each including its sub-sections.
 pub fn read_file(path: &Path, section: Option<&str>) -> Result<String, String> {
-    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let text = normalize_newlines(&fs::read_to_string(path).map_err(|e| e.to_string())?);
     let (_, body) = split_frontmatter(&text);
     let Some(sec) = section.map(str::to_lowercase) else {
         return Ok(body.to_string());
@@ -876,6 +885,7 @@ mod tests {
         let f = fs::File::options().append(true).open(mem.join("db.md")).unwrap();
         f.set_modified(SystemTime::now() + std::time::Duration::from_secs(1))
             .unwrap();
+        drop(f); // Windows can't delete a directory holding an open file.
         assert!(idx.search("postgres", 5, None).unwrap().is_empty());
         assert_eq!(idx.search("sqlite", 5, None).unwrap().len(), 1);
         fs::remove_dir_all(&root).unwrap();

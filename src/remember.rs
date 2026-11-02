@@ -96,15 +96,57 @@ pub fn looks_secret(text: &str) -> Option<&'static str> {
     None
 }
 
+/// Today's local date as YYYY-MM-DD. Asks the OS for the local date (`date` on Unix,
+/// PowerShell on Windows — never cmd's interactive `date`), falling back to UTC.
 fn today() -> String {
-    Command::new("date")
-        .arg("+%F")
-        .output()
+    #[cfg(unix)]
+    let local = Command::new("date").arg("+%F").output();
+    #[cfg(windows)]
+    let local = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-Date -Format yyyy-MM-dd",
+        ])
+        .output();
+    #[cfg(not(any(unix, windows)))]
+    let local: std::io::Result<std::process::Output> = Err(std::io::ErrorKind::Unsupported.into());
+    local
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
-        .filter(|s| s.len() == 10)
-        .unwrap_or_else(|| "unknown-date".into())
+        .filter(|s| is_date(s))
+        .unwrap_or_else(utc_date)
+}
+
+fn is_date(s: &str) -> bool {
+    s.len() == 10
+        && s.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
+}
+
+/// UTC date from the system clock (civil-from-days, H. Hinnant).
+fn utc_date() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn one_line(s: &str) -> String {
@@ -215,6 +257,13 @@ fn commit(vault: &Path, stem: &str, agent: &str, created: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates() {
+        assert!(is_date(&utc_date()), "{}", utc_date());
+        assert!(is_date(&today()));
+        assert!(!is_date("Mon Nov  2"));
+    }
 
     #[test]
     fn slugs() {

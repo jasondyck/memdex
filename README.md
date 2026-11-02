@@ -134,8 +134,19 @@ which a static table can't supply — the calling LLM rewriting the question int
 key nouns is the cheaper fix. Models (MIT) live in `~/.local/share/memdex/models/`.
 
 ## Install
-Prebuilt static binaries (Linux x86_64 and aarch64, no dependencies) are attached to each
-[GitHub release](https://github.com/jasondyck/memdex/releases):
+Prebuilt binaries for Linux and Windows (x86_64 and ARM64, no dependencies) are attached to
+each [GitHub release](https://github.com/jasondyck/memdex/releases).
+
+**Windows** (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/jasondyck/memdex/main/install.ps1 | iex
+claude mcp add --scope user memdex -- "$env:LOCALAPPDATA\Programs\memdex\memdex.exe" serve
+```
+Installs to `%LOCALAPPDATA%\Programs\memdex` (added to your user PATH; `MEMDEX_NO_PATH=1` to skip)
+after verifying the SHA-256. Memory lives in the same places as on Linux: Claude Code's
+`%USERPROFILE%\.claude\projects\*\memory` and the shared vault `%USERPROFILE%\memory`.
+
+**Linux:**
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jasondyck/memdex/main/install.sh | sh
 claude mcp add --scope user memdex -- ~/.local/bin/memdex serve
@@ -153,14 +164,17 @@ sudo apt install gcc curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a new shell
 cargo build --release && install -Dm755 target/release/memdex ~/.local/bin/memdex
 ```
-`deploy/` has a systemd user timer for nightly backups of `~/memory` and the Claude memory dirs
+Windows: the same, with the MSVC toolchain (`rustup` default on Windows); the binary links the C
+runtime statically, so it needs no VC++ redistributable. `deploy/` (Linux only) has a systemd user
+timer for nightly backups of `~/memory` and the Claude memory dirs
 (`MEMDEX_BACKUP_DIR`), and a unit for the HTTP transport.
 
 ## Releasing
-CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on every push. To release, bump
+CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on Linux and Windows on every push, and
+on Windows also builds a release-style zip and runs `install.ps1` against it. To release, bump
 `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`:
 `release.yml` checks the tag matches `Cargo.toml`, runs the tests on each architecture, builds
-static musl binaries, and publishes them with checksums. It uses no third-party actions.
+static binaries (Linux musl, Windows MSVC with static CRT), and publishes them with checksums. It uses no third-party actions.
 
 ## License
 Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
