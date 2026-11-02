@@ -7,6 +7,7 @@
 //!   memdex search QUERY [OPTS] [--limit N]      search from the shell
 //!   memdex read FILE [SECTION] [OPTS]           print a note (or matching parts)
 //!   memdex remember TOPIC FACT [OPTS]           add a fact to the shared vault
+//!   memdex update [--check] [--version vX.Y.Z]  update from GitHub releases (verified)
 //!
 //! OPTS: --config FILE | --agent NAME | --dir DIR | --write-dir DIR | --read-only
 //! Without --config: all ~/.claude/projects/*/memory dirs + ~/memory (writable).
@@ -19,6 +20,7 @@ mod index;
 mod porter;
 mod remember;
 mod transcripts;
+mod update;
 
 use config::Config;
 use index::{Hit, Index, Source, Tuning, read_file};
@@ -300,6 +302,19 @@ fn main() {
         println!("memdex {VERSION}");
         return;
     }
+    update::cleanup_old_binary();
+    if args.first().map(String::as_str) == Some("update") {
+        // memdex update [--check] [--version vX.Y.Z]
+        let check = args.iter().any(|a| a == "--check");
+        let pinned = args
+            .iter()
+            .position(|a| a == "--version")
+            .and_then(|i| args.get(i + 1).cloned());
+        if let Err(e) = update::run(VERSION, check, pinned) {
+            die(e);
+        }
+        return;
+    }
     let configs = take_all(&mut args, "--config");
     let clients = take_all(&mut args, "--client");
     let dirs = take_all(&mut args, "--dir");
@@ -467,7 +482,7 @@ fn main() {
             built,
             source,
         ),
-        _ => die("usage: memdex [serve|http|search|read|remember|bench] … (see source header)"),
+        _ => die("usage: memdex [serve|http|search|read|remember|update|bench] … (see source header)"),
     }
 }
 

@@ -49,3 +49,11 @@ jobs:
           "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" //Q //DAppVersion=0.0.0 //DArch=x64 \
             "//DSrcDir=$(cygpath -wa src-dir)" "//DOutDir=$(cygpath -wa out)" "$(cygpath -wa packaging/windows/memdex.iss)"
           pwsh -NoProfile -File packaging/windows/test-setup.ps1 -Setup "$(cygpath -wa out/memdex-0.0.0-x64-setup.exe)"
+      - name: memdex update end-to-end (mock releases server)
+        run: |
+          exe=""; [ "$RUNNER_OS" = Windows ] && exe=.exe
+          cargo build --locked --release
+          mkdir -p ../v999 && git archive HEAD | tar -x -C ../v999
+          sed -i 's/^version = ".*"$/version = "9.9.9"/' ../v999/Cargo.toml
+          (cd ../v999 && cargo build --release --target-dir ../v999-target)
+          python packaging/test/update_e2e.py "target/release/memdex$exe" "../v999-target/release/memdex$exe" 9.9.9

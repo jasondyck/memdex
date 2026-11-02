@@ -71,6 +71,7 @@ memdex http --listen 127.0.0.1:8765 --client client.conf     # HTTP MCP, bearer 
 memdex search ci cache key
 memdex read build-cache gotcha
 memdex remember build-cache "Cache is now keyed on the lockfile hash" --agent me
+memdex update [--check] [--version vX.Y.Z]
 memdex bench bench/example/cases.tsv --dir bench/example/notes
 ```
 
@@ -183,6 +184,19 @@ The script picks your architecture, verifies the SHA-256 checksum and installs t
 `~/.local/bin` (`MEMDEX_VERSION=v0.4.1` pins a release, `MEMDEX_BIN_DIR` changes the location).
 Prefer not to pipe to `sh`? Download `memdex-<arch>-unknown-linux-musl.tar.gz` and its `.sha256`
 from the release page, run `sha256sum -c`, and copy `memdex` onto your PATH.
+
+### Updating
+```sh
+memdex update            # install the latest release (verifies the SHA-256 first)
+memdex update --check    # only report whether a newer release exists
+memdex update --version v0.5.2   # install a specific release (also allows downgrades)
+```
+It respects how memdex was installed: a plain binary (install.sh / install.ps1 / archive) is
+swapped in place — atomically on Linux, so running MCP sessions keep the old copy until they
+restart; on Windows the running exe is renamed aside and removed on the next start. A Windows
+`setup.exe` install is updated by running the new installer silently; a `.deb` (`/usr/bin`) is
+left to the package manager and the command prints the `apt install` line. Uses the system
+`curl` and `tar` (both ship with Windows 10+). Without `--version` it never downgrades.
 
 ### From source
 Needs Rust ≥ 1.89. No C code is compiled, but like most Rust projects the build uses the
