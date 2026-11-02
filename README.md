@@ -137,7 +137,14 @@ key nouns is the cheaper fix. Models (MIT) live in `~/.local/share/memdex/models
 Prebuilt binaries for Linux and Windows (x86_64 and ARM64, no dependencies) are attached to
 each [GitHub release](https://github.com/jasondyck/memdex/releases).
 
-**Windows** (PowerShell):
+**Packages** (from the release page):
+- Windows: `memdex-<version>-x64-setup.exe` / `-arm64-setup.exe` — per-user installer, no admin
+  rights, adds memdex to your PATH, uninstall from *Apps & features*. The installer is not
+  code-signed, so SmartScreen will warn ("More info" → "Run anyway").
+- Debian / Ubuntu: `sudo apt install ./memdex_<version>_amd64.deb` (or `_arm64.deb`); installs
+  `/usr/bin/memdex`, remove with `sudo apt remove memdex`.
+
+**Windows** (PowerShell script, no SmartScreen prompt):
 ```powershell
 irm https://raw.githubusercontent.com/jasondyck/memdex/main/install.ps1 | iex
 claude mcp add --scope user memdex -- "$env:LOCALAPPDATA\Programs\memdex\memdex.exe" serve
@@ -171,10 +178,12 @@ timer for nightly backups of `~/memory` and the Claude memory dirs
 
 ## Releasing
 CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on Linux and Windows on every push, and
-on Windows also builds a release-style zip and runs `install.ps1` against it. To release, bump
+on Windows also builds a release-style zip and runs `install.ps1` against it, and compiles the
+Inno Setup installer and installs / uninstalls it silently (checking files and the PATH entry). To release, bump
 `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`:
 `release.yml` checks the tag matches `Cargo.toml`, runs the tests on each architecture, builds
-static binaries (Linux musl, Windows MSVC with static CRT), and publishes them with checksums. It uses no third-party actions.
+static binaries (Linux musl, Windows MSVC with static CRT), .deb packages and Windows
+setup.exe installers, and publishes them all with checksums. It uses no third-party actions.
 
 ## License
 Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

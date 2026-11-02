@@ -88,15 +88,54 @@ jobs:
           else
             tar -C dist -czf "dist/$asset" "$name"
           fi
-          (cd dist && sha256sum "$asset" | sed 's/ \*/  /' > "$asset.sha256" && cat "$asset.sha256")
-          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          assets="$asset"
+          # Linux: also a .deb (static binary, no dependencies).
+          case "$TARGET" in
+            x86_64-unknown-linux-musl) assets="$assets $(basename "$(packaging/deb/build-deb.sh "$bin" "${TAG#v}" amd64 dist)")" ;;
+            aarch64-unknown-linux-musl) assets="$assets $(basename "$(packaging/deb/build-deb.sh "$bin" "${TAG#v}" arm64 dist)")" ;;
+          esac
+          for a in $assets; do (cd dist && sha256sum "$a" | sed 's/ \*/  /' > "$a.sha256" && cat "$a.sha256"); done
+          echo "ASSETS=$assets" >> "$GITHUB_ENV"
       - name: Upload to draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" "dist/$ASSET" "dist/$ASSET.sha256" --clobber
+        run: for a in $ASSETS; do gh release upload "$TAG" "dist/$a" "dist/$a.sha256" --clobber; done
+
+  installers:
+    # Windows setup.exe for x64 and ARM64, built with the runner's Inno Setup from the
+    # zips the build job uploaded (so the ARM runner doesn't need Inno Setup).
+    needs: build
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          ver="${TAG#v}"
+          mkdir -p dl dist
+          for pair in x86_64:x64 aarch64:arm64; do
+            t="${pair%%:*}-pc-windows-msvc"; arch="${pair##*:}"
+            gh release download "$TAG" -p "memdex-$t.zip" -p "memdex-$t.zip.sha256" -D dl --clobber
+            (cd dl && sha256sum -c "memdex-$t.zip.sha256")
+            (cd dl && 7z x -y "memdex-$t.zip" >/dev/null)
+            "$iscc" //Q "//DAppVersion=$ver" "//DArch=$arch" "//DSrcDir=$(cygpath -w "dl/memdex-$t")" \
+              "//DOutDir=$(cygpath -w dist)" "$(cygpath -w packaging/windows/memdex.iss)"
+            setup="memdex-$ver-$arch-setup.exe"
+            (cd dist && sha256sum "$setup" | sed 's/ \*/  /' > "$setup.sha256" && cat "$setup.sha256")
+            gh release upload "$TAG" "dist/$setup" "dist/$setup.sha256" --clobber
+          done
 
   publish:
-    needs: build
+    needs: [build, installers]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
