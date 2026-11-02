@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly agent memory backup
+
+[Timer]
+OnCalendar=*-*-* 03:20
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

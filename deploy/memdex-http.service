@@ -1,0 +1,11 @@
+[Unit]
+Description=memdex shared agent memory (MCP over HTTP for remote agents)
+
+[Service]
+ExecStart=%h/.local/bin/memdex http --listen 127.0.0.1:8765 --client %h/.config/memdex/client.conf
+Restart=on-failure
+Nice=5
+MemoryMax=64M
+
+[Install]
+WantedBy=default.target

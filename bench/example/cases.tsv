@@ -1,0 +1,11 @@
+# query<TAB>expected note(s)<TAB>answer substring — fictional example data
+how long does a build take without the cache	build-cache	14 minutes
+link errors after upgrading the compiler	build-cache	Clear the cache
+where is the staging database	db-migrations	203.0.113.7
+can I fix a typo in an old migration	db-migrations	Never edit
+what format are release tags	release-checklist	vMAJOR
+how many api calls are we allowed	api-rate-limits	100 requests
+what to do when we get rate limited	api-rate-limits	back off
+checkout test fails randomly	flaky-tests	fake clock
+how big should a pull request be	review-style	400
+203.0.113.7	db-migrations	203.0.113.7

@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up agent memory (~/memory + Claude memory notes)
+
+[Service]
+Type=oneshot
+Nice=15
+# Environment=MEMDEX_BACKUP_DIR=%h/some/synced/folder
+ExecStart=%h/.local/bin/memory-backup.sh
