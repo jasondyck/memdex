@@ -13,8 +13,10 @@
 
 mod config;
 mod embed;
+mod fts;
 mod http;
 mod index;
+mod porter;
 mod remember;
 
 use config::Config;
@@ -396,6 +398,14 @@ fn main() {
             match remember::remember(&vault, &srv.cfg.agent, topic, fact, None, None) {
                 Ok(m) => println!("{m}"),
                 Err(e) => die(e),
+            }
+        }
+        "stems" => {
+            // Debug: print the index's tokens for stdin text (used to check parity with SQLite FTS5).
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).ok();
+            for t in porter::tokens(&text) {
+                println!("{t}");
             }
         }
         "tokens" => {

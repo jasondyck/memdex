@@ -52,11 +52,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Toolchain (static musl build; SQLite is compiled in)
-        run: |
-          sudo apt-get update -q && sudo apt-get install -yq musl-tools
-          rustup toolchain install stable --profile minimal --target "$TARGET" && rustup default stable
-          echo "CC_$(echo "$TARGET" | tr - _)=musl-gcc" >> "$GITHUB_ENV"
+      - name: Toolchain (static musl; links with Rust's bundled lld, see .cargo/config.toml)
+        run: rustup toolchain install stable --profile minimal --target "$TARGET" && rustup default stable
       - name: Test
         run: cargo test --locked --release
       - name: Build

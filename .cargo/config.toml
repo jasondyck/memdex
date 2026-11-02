@@ -1,0 +1,9 @@
+# Static musl builds link with Rust's bundled lld and self-contained musl CRT,
+# so they need no system C compiler or linker at all.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]

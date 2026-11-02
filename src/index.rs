@@ -1,11 +1,11 @@
-//! In-memory SQLite FTS5 index over Claude Code memory markdown files.
+//! In-memory full-text index (pure Rust, see `fts.rs`) over Claude Code memory markdown files.
 //!
 //! The markdown files stay the source of truth: nothing is written back, and the
 //! index lives only in RAM. Every query first re-stats the files and re-indexes
 //! any that changed, so results never go stale.
 
 use crate::embed::{Embedder, dot};
-use rusqlite::{Connection, params};
+use crate::fts::{Fts, Phrase};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -108,8 +108,10 @@ pub struct Hit {
     pub body: String,
 }
 
+pub type Result<T, E = String> = std::result::Result<T, E>;
+
 pub struct Index {
-    conn: Connection,
+    fts: Fts,
     /// (directory, label) pairs; the label is what results show as `project`.
     dirs: Vec<(PathBuf, String)>,
     /// Note names (`stem`) or `label/stem` this index must never expose.
@@ -124,11 +126,11 @@ pub struct Index {
 }
 
 impl Index {
-    pub fn new(dirs: Vec<(PathBuf, String)>, exclude: Vec<String>) -> rusqlite::Result<Self> {
+    pub fn new(dirs: Vec<(PathBuf, String)>, exclude: Vec<String>) -> Result<Self> {
         Self::with_tuning(dirs, exclude, Tuning::default())
     }
 
-    pub fn with_tuning(dirs: Vec<(PathBuf, String)>, exclude: Vec<String>, tune: Tuning) -> rusqlite::Result<Self> {
+    pub fn with_tuning(dirs: Vec<(PathBuf, String)>, exclude: Vec<String>, tune: Tuning) -> Result<Self> {
         Self::with_model(dirs, exclude, tune, None)
     }
 
@@ -137,16 +139,9 @@ impl Index {
         exclude: Vec<String>,
         tune: Tuning,
         emb: Option<Arc<Embedder>>,
-    ) -> rusqlite::Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        conn.execute_batch(
-            "CREATE VIRTUAL TABLE chunks USING fts5(
-                 path UNINDEXED, project UNINDEXED, file, heading, ctx, body,
-                 tokenize = 'porter unicode61 remove_diacritics 2');
-             CREATE VIRTUAL TABLE tri USING fts5(body, tokenize = 'trigram');",
-        )?;
+    ) -> Result<Self> {
         let mut idx = Index {
-            conn,
+            fts: Fts::default(),
             dirs,
             exclude,
             seen: HashMap::new(),
@@ -202,7 +197,7 @@ impl Index {
     }
 
     /// Re-index files that were added, changed or removed since the last call.
-    pub fn refresh(&mut self) -> rusqlite::Result<usize> {
+    pub fn refresh(&mut self) -> Result<usize> {
         if self.watch_claude {
             for (d, l) in crate::config::claude_dirs() {
                 if !self.dirs.iter().any(|(x, _)| *x == d) {
@@ -219,9 +214,8 @@ impl Index {
             .cloned()
             .collect();
         let labels: HashMap<PathBuf, String> = current.keys().map(|p| (p.clone(), self.label_of(p))).collect();
-        let tx = self.conn.transaction()?;
         for p in &removed {
-            delete_path(&tx, p)?;
+            self.fts.remove_path(&p.to_string_lossy());
             self.vecs.remove(p);
             changed += 1;
         }
@@ -229,23 +223,14 @@ impl Index {
             if self.seen.get(p) == Some(mtime) {
                 continue;
             }
-            // Deleting scans the FTS table (path is UNINDEXED), so only do it for
-            // files indexed before — otherwise the first build is quadratic.
-            if self.seen.contains_key(p) {
-                delete_path(&tx, p)?;
-            }
+            self.fts.remove_path(&p.to_string_lossy());
             if let Ok(text) = fs::read_to_string(p) {
                 let file = stem(p);
                 let project = &labels[p];
                 let path = p.to_string_lossy();
-                let mut ins_chunk = tx.prepare_cached(
-                    "INSERT INTO chunks(path, project, file, heading, ctx, body) VALUES (?1,?2,?3,?4,?5,?6)",
-                )?;
-                let mut ins_tri = tx.prepare_cached("INSERT INTO tri(rowid, body) VALUES (?1, ?2)")?;
                 let mut pv = Vec::new();
                 for c in chunk_markdown_with(&text, &self.tune) {
-                    let id = ins_chunk.insert(params![path, project, file, c.heading, c.ctx, c.body])?;
-                    ins_tri.execute(params![id, c.body])?;
+                    let id = self.fts.insert(&path, project, &file, &c.heading, &c.ctx, &c.body);
                     if let Some(e) = &self.emb {
                         for t in passages(&file, &c, self.tune.pass) {
                             if let Some(v) = e.embed(&t) {
@@ -260,7 +245,6 @@ impl Index {
             }
             changed += 1;
         }
-        tx.commit()?;
         for p in removed {
             self.seen.remove(&p);
         }
@@ -275,31 +259,16 @@ impl Index {
     /// Hybrid search: BM25 over words (+ trigram fallback for identifiers like IPs),
     /// fused with embedding similarity when a model is loaded, then at most
     /// `per_note` sections per note.
-    pub fn search(&mut self, query: &str, limit: usize, project: Option<&str>) -> rusqlite::Result<Vec<Hit>> {
+    pub fn search(&mut self, query: &str, limit: usize, project: Option<&str>) -> Result<Vec<Hit>> {
         const POOL: usize = 40;
         self.refresh()?;
-        let mut bm: Vec<Hit> = Vec::new();
-        if let Some(q) = word_query_with(query, self.tune.prefix, self.tune.stop) {
-            let ((wf, wh, wb), wc) = (self.tune.w, self.tune.wc);
-            let mut st = self.conn.prepare_cached(&format!(
-                "SELECT rowid, project, file, heading, body FROM chunks
-                 WHERE chunks MATCH ?1 AND (?2 IS NULL OR project LIKE '%' || ?2 || '%')
-                 ORDER BY bm25(chunks, 0, 0, {wf:.3}, {wh:.3}, {wc:.3}, {wb:.3}) LIMIT ?3"
-            ))?;
-            bm.extend(st.query_map(params![q, project, POOL as i64], row_to_hit)?.flatten());
-        }
-        if bm.len() < limit
-            && let Some(q) = trigram_query(query)
-        {
-            let mut st = self.conn.prepare_cached(
-                "SELECT c.rowid, c.project, c.file, c.heading, c.body
-                 FROM tri JOIN chunks c ON c.rowid = tri.rowid
-                 WHERE tri MATCH ?1 AND (?2 IS NULL OR c.project LIKE '%' || ?2 || '%')
-                 ORDER BY bm25(tri) LIMIT ?3",
-            )?;
-            for h in st.query_map(params![q, project, POOL as i64], row_to_hit)?.flatten() {
-                if !bm.iter().any(|x| x.id == h.id) {
-                    bm.push(h);
+        let phrases = query_phrases(query, self.tune.prefix, self.tune.stop);
+        let ((wf, wh, wb), wc) = (self.tune.w, self.tune.wc);
+        let mut bm: Vec<i64> = self.fts.search(&phrases, [wf, wh, wc, wb], project, POOL);
+        if bm.len() < limit {
+            for id in self.fts.substring(&substring_terms(query), project, POOL) {
+                if !bm.contains(&id) {
+                    bm.push(id);
                 }
             }
         }
@@ -309,25 +278,18 @@ impl Index {
                 let k = self.tune.rrf;
                 let mut score: HashMap<i64, f64> = HashMap::new();
                 for (r, h) in bm.iter().enumerate() {
-                    *score.entry(h.id).or_default() += 1.0 / (k + r as f64 + 1.0);
+                    *score.entry(*h).or_default() += 1.0 / (k + r as f64 + 1.0);
                 }
                 for (r, (id, _)) in sem.iter().enumerate() {
                     *score.entry(*id).or_default() += self.tune.sem / (k + r as f64 + 1.0);
                 }
                 let mut ids: Vec<(i64, f64)> = score.into_iter().collect();
                 ids.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-                let mut by_id: HashMap<i64, Hit> = bm.into_iter().map(|h| (h.id, h)).collect();
-                let mut out = Vec::new();
-                for (id, _) in ids.into_iter().take(POOL) {
-                    match by_id.remove(&id) {
-                        Some(h) => out.push(h),
-                        None => out.extend(self.chunk_row(id)?),
-                    }
-                }
-                out
+                ids.into_iter().take(POOL).map(|(id, _)| id).collect()
             }
             None => bm,
         };
+        let ranked = ranked.into_iter().filter_map(|id| self.hit(id));
         // Keep at most `per_note` sections per note so one long note can't
         // crowd every other note out of the results.
         let mut per: HashMap<String, usize> = HashMap::new();
@@ -370,12 +332,14 @@ impl Index {
         Some(v)
     }
 
-    fn chunk_row(&self, id: i64) -> rusqlite::Result<Option<Hit>> {
-        let mut st = self
-            .conn
-            .prepare_cached("SELECT rowid, project, file, heading, body FROM chunks WHERE rowid = ?1")?;
-        let mut rows = st.query_map(params![id], row_to_hit)?;
-        rows.next().transpose()
+    fn hit(&self, id: i64) -> Option<Hit> {
+        self.fts.get(id).map(|d| Hit {
+            id,
+            project: d.project.clone(),
+            file: d.file.clone(),
+            heading: d.heading.clone(),
+            body: d.body.clone(),
+        })
     }
 
     /// What an agent sees for one hit: query-focused lines when `focus` is on
@@ -402,13 +366,9 @@ impl Index {
         }
     }
 
-    pub fn chunk(&mut self, id: i64) -> rusqlite::Result<Option<Hit>> {
+    pub fn chunk(&mut self, id: i64) -> Result<Option<Hit>> {
         self.refresh()?;
-        let mut st = self
-            .conn
-            .prepare("SELECT rowid, project, file, heading, body FROM chunks WHERE rowid = ?1")?;
-        let mut rows = st.query_map(params![id], row_to_hit)?;
-        rows.next().transpose()
+        Ok(self.hit(id))
     }
 
     /// Locate a memory file by name (with or without `.md`), optionally scoped to a project.
@@ -456,26 +416,6 @@ fn passages(file: &str, c: &Chunk, pass: usize) -> Vec<String> {
     out
 }
 
-fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {
-    Ok(Hit {
-        id: r.get(0)?,
-        project: r.get(1)?,
-        file: r.get(2)?,
-        heading: r.get(3)?,
-        body: r.get(4)?,
-    })
-}
-
-fn delete_path(conn: &Connection, p: &Path) -> rusqlite::Result<()> {
-    let path = p.to_string_lossy();
-    conn.execute(
-        "DELETE FROM tri WHERE rowid IN (SELECT rowid FROM chunks WHERE path = ?1)",
-        params![path],
-    )?;
-    conn.execute("DELETE FROM chunks WHERE path = ?1", params![path])?;
-    Ok(())
-}
-
 fn stem(p: &Path) -> String {
     p.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -488,47 +428,31 @@ const STOPWORDS: &[&str] = &[
     "you", "your", "we", "our", "can", "should", "about", "use", "used",
 ];
 
-/// Free text → FTS5 query: each meaningful word as a quoted prefix term, OR-ed so
-/// BM25 ranks chunks matching more of the words higher.
-#[cfg(test)]
-pub fn word_query(q: &str) -> Option<String> {
-    word_query_with(q, true, true)
-}
-
-pub fn word_query_with(q: &str, prefix: bool, stop: bool) -> Option<String> {
-    let mut terms: Vec<String> = q
-        .split(|c: char| !c.is_alphanumeric())
-        .map(str::to_lowercase)
-        .filter(|t| !(t.is_empty() || stop && STOPWORDS.contains(&t.as_str())))
+/// Free text → OR-ed query phrases: unicode61 tokens minus stopwords (consecutive
+/// repeats dropped), Porter-stemmed, optionally as prefixes — exactly what the
+/// previous SQLite FTS5 query `"w1"* OR "w2"* …` matched.
+pub fn query_phrases(q: &str, prefix: bool, stop: bool) -> Vec<Phrase> {
+    let mut raw: Vec<String> = crate::porter::raw_tokens(q)
+        .into_iter()
+        .filter(|t| !(stop && STOPWORDS.contains(&t.as_str())))
         .collect();
-    terms.dedup();
-    if terms.is_empty() {
-        return None;
-    }
-    let star = if prefix { "*" } else { "" };
-    Some(
-        terms
-            .iter()
-            .map(|t| format!("\"{t}\"{star}"))
-            .collect::<Vec<_>>()
-            .join(" OR "),
-    )
+    raw.dedup();
+    raw.into_iter()
+        .map(|t| Phrase {
+            term: crate::porter::stem(&t),
+            prefix,
+        })
+        .collect()
 }
 
-/// Raw whitespace-separated terms (≥3 chars) for the trigram table, so
-/// `203.0.113.7` or `build-7f3a` match as substrings.
-pub fn trigram_query(q: &str) -> Option<String> {
-    let terms: Vec<String> = q
-        .split_whitespace()
+/// Raw whitespace-separated terms (≥3 chars) for substring search, so
+/// `203.0.113.7` or `build-7f3a` match even though the word index splits them.
+pub fn substring_terms(q: &str) -> Vec<String> {
+    q.split_whitespace()
         .map(|t| t.trim_matches(|c: char| "?!,;:()[]{}'\"`".contains(c)))
         .filter(|t| t.chars().count() >= 3 && !STOPWORDS.contains(&t.to_lowercase().as_str()))
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
-        .collect();
-    if terms.is_empty() {
-        None
-    } else {
-        Some(terms.join(" OR "))
-    }
+        .map(str::to_string)
+        .collect()
 }
 
 /// Lowercased query words (stopwords dropped), cut to a 5-char stem so
@@ -828,13 +752,13 @@ mod tests {
     }
 
     #[test]
-    fn queries_drop_stopwords_and_quote_terms() {
-        assert_eq!(
-            word_query("What port is Grafana on?").unwrap(),
-            "\"port\"* OR \"grafana\"*"
-        );
-        assert_eq!(trigram_query("what is 203.0.113.7?").unwrap(), "\"203.0.113.7\"");
-        assert!(word_query("the of is").is_none());
+    fn queries_drop_stopwords_and_stem() {
+        let p = query_phrases("What ports is Grafana running on?", true, true);
+        let terms: Vec<&str> = p.iter().map(|x| x.term.as_str()).collect();
+        assert_eq!(terms, ["port", "grafana", "run"]);
+        assert!(p.iter().all(|x| x.prefix));
+        assert_eq!(substring_terms("what is 203.0.113.7?"), ["203.0.113.7"]);
+        assert!(query_phrases("the of is", true, true).is_empty());
     }
 
     #[test]

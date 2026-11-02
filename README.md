@@ -2,8 +2,8 @@
 
 Fast, lightweight shared memory for AI agents: full-text search over markdown memory
 notes, plus a shared vault any agent can write to — served over MCP (stdio or HTTP).
-No daemon needed, no LLM, no embeddings, no database file. Two crates: `rusqlite` (bundled
-SQLite) and `serde_json`. Optional static embeddings with no extra crates.
+No daemon needed, no LLM, no embeddings, no database file, no C code: pure Rust with one
+dependency (`serde_json`). Optional static embeddings with no extra crates.
 
 ## What it indexes
 - Every Claude Code memory dir (`~/.claude/projects/*/memory/*.md`) — read-only.
@@ -11,8 +11,10 @@ SQLite) and `serde_json`. Optional static embeddings with no extra crates.
   authored `memdex/<agent>`), plain markdown with Claude-memory-style frontmatter.
 - `MEMORY.md` and `README.md` are skipped.
 
-Index lives in RAM: SQLite FTS5 (porter stemming, BM25 weighted name 4 / heading 3 /
-hidden note-description 1 / body 1) plus a trigram table for exact identifiers (IPs, hostnames).
+Index lives in RAM: a small inverted index (`src/fts.rs`) that reproduces SQLite FTS5's
+`porter unicode61` tokenizer and BM25 exactly (weighted name 4 / heading 3 / hidden
+note-description 1 / body 1), plus case-insensitive substring search for exact identifiers
+(IPs, hostnames). It replaced SQLite in 0.5; see "Pure-Rust index" below for the parity checks.
 Every call re-stats the files and re-indexes only what changed, so results are never stale.
 Notes are chunked by heading, splitting only sections over 4000 chars; at most 2 sections per
 note per result list. Snippets are query-focused: the lines with the most query words, in order.
@@ -81,13 +83,25 @@ Speed & size (synthetic copies of the notes):
 
 | notes | build at start | query p50 / p95 | RSS |
 |---|---|---|---|
-| 83 (today) | 49 ms | 0.7 / 2.0 ms | 12 MB |
-| 830 | 0.63 s | 3.3 / 14 ms | 37 MB |
-| 4,150 | 3.8 s | 15 / 68 ms | 69 MB |
+| 83 | 28 ms | 0.22 / 0.32 ms | 6 MB |
+| 830 | 0.23 s | 1.9 / 2.6 ms | 16 MB |
+| 4,150 | 1.1 s | 10.5 / 14.6 ms | 61 MB |
 
-Binary 3.2 MB; `remember` 7 ms including the git commit.
+Static binary ~1 MB; `remember` 7 ms including the git commit.
 Run your own: `memdex bench CASES.tsv --dir YOUR/MEMORY/DIR`
 (`--tune "w=4,3,1 wc=1 focus=1 chunk=4000,3000 per=2 stop=1" --limit 3 --snip 1200` = defaults).
+
+## Pure-Rust index (0.5)
+SQLite FTS5 was replaced by `src/fts.rs` + `src/porter.rs` after three checks against the SQLite
+version on the same private corpus:
+1. **Tokens:** identical vocabulary (7,459 terms) and per-term counts (83,923 tokens) to
+   `porter unicode61 remove_diacritics 2`, over all notes plus an accented / non-Latin stress text.
+2. **Rankings:** 352 queries (word and identifier) return the same top-6 lists; the only
+   difference was one exact score tie ordered differently.
+3. **Benchmarks:** identical accuracy on both held-out sets; versus SQLite, queries are ~4.5×
+   faster (p50 0.97 → 0.22 ms), startup ~2× faster, RSS 12.4 → 6 MB, binary 3.1 → 1 MB, and a clean
+   release build takes 3.4 s instead of 46 s. Static musl binaries link with Rust's bundled
+   `rust-lld` (`.cargo/config.toml`), so no musl toolchain is needed and aarch64 cross-builds from x86.
 
 ## Static embeddings (opt-in, off by default)
 `embed.rs` loads Model2Vec "potion" models (static token→vector tables, no neural net at
@@ -125,10 +139,10 @@ Prefer not to pipe to `sh`? Download `memdex-<arch>-unknown-linux-musl.tar.gz` a
 from the release page, run `sha256sum -c`, and copy `memdex` onto your PATH.
 
 ### From source
-Needs Rust ≥ 1.89 and a C compiler (SQLite is compiled in). On Ubuntu the apt `cargo` is too old;
-use rustup:
+Needs Rust ≥ 1.89. No C code is compiled, but like most Rust projects the build uses the
+system linker (`cc`). On Ubuntu the apt `cargo` is too old; use rustup:
 ```sh
-sudo apt install build-essential curl
+sudo apt install gcc curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a new shell
 cargo build --release && install -Dm755 target/release/memdex ~/.local/bin/memdex
 ```
