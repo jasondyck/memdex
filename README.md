@@ -140,3 +140,6 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on every push. To rel
 `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`:
 `release.yml` checks the tag matches `Cargo.toml`, runs the tests on each architecture, builds
 static musl binaries, and publishes them with checksums. It uses no third-party actions.
+
+## License
+Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
