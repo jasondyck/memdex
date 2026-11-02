@@ -10,6 +10,8 @@ dependency (`serde_json`). Optional static embeddings with no extra crates.
 - The shared vault `~/memory/` — written by `remember`, git-tracked (each write is a commit
   authored `memdex/<agent>`), plain markdown with Claude-memory-style frontmatter.
 - `MEMORY.md` and `README.md` are skipped.
+- Optionally, **Claude Code session transcripts** (`~/.claude/projects/*/*.jsonl`) as a separate
+  "history" index — see below.
 
 Index lives in RAM: a small inverted index (`src/fts.rs`) that reproduces SQLite FTS5's
 `porter unicode61` tokenizer and BM25 exactly (weighted name 4 / heading 3 / hidden
@@ -24,12 +26,30 @@ note per result list. Snippets are query-focused: the lines with the most query 
 ## Tools
 | Tool | |
 |---|---|
-| `search {query, limit?, project?, full?}` | top 3 notes as `[id] project/file › heading` + the lines matching the query (≤1200 chars each) |
+| `search {query, limit?, project?, full?, source?}` | top 3 notes as `[id] project/file › heading` + the lines matching the query (≤1200 chars each) |
 | `read {id}` / `read {file, section?, project?}` | one section, a note, or just the parts mentioning `section` |
 | `remember {topic, fact, description?, type?}` | append a dated, agent-tagged bullet to `~/memory/<topic>.md` (only when the agent has a write dir) |
 
 `remember` refuses credential-looking text (known token prefixes, `password=`/`?token=` values,
 PEM blocks, long mixed-case random strings, "password is …") and facts over 2000 chars.
+
+## Past conversations (transcripts)
+`search` with `source: "history"` searches Claude Code's session transcripts; `"all"` merges them
+with the notes (reciprocal rank), `"notes"` is the default. Only the conversation is indexed —
+your prompts and Claude's text replies, about 3% of a transcript; tool calls, tool output, thinking,
+sidechains and injected system text are skipped. Each prompt plus its replies is one section,
+labelled `project/session-<id> › date · prompt`.
+
+- Built on the first history search (≈0.6 s for ~560 MB of transcripts here), then incremental:
+  files are append-only, so only new lines are read and only the still-open exchange is re-indexed.
+  ~12 MB extra RSS for ~300 sessions; queries ~1–2 ms.
+- On by default only without `--config` (Claude itself); other agents need the `transcripts`
+  directive, because transcripts contain everything, including work sessions. `--no-transcripts`
+  turns it off.
+- Claude Code deletes transcripts after `cleanupPeriodDays` (default 30), so history is a rolling
+  window. Durable facts belong in notes (`remember`), which do not expire.
+- Notes stay the default because they are curated: on the note question sets, `source: all`
+  keeps the same top-1 but costs 1–5 points of top-3 (transcript exchanges take the extra slots).
 
 ## Per-agent configs (`--config FILE`)
 ```text
@@ -39,6 +59,7 @@ dir ~/memory shared       # extra dir + label
 write-dir ~/memory        # enables `remember`
 exclude payroll           # hide a note (or label/note) from this agent entirely
 token <48 hex>            # HTTP clients only; file must be chmod 600
+transcripts               # also search Claude Code session transcripts (source: history|all)
 read-only
 ```
 No `--config` = Claude Code on this machine: all Claude dirs + `~/memory`, writable, agent `claude`.

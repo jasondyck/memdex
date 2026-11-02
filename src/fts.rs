@@ -121,6 +121,30 @@ impl Fts {
         }
     }
 
+    /// Remove one section (used to replace a transcript's still-growing last exchange).
+    pub fn remove_id(&mut self, id: i64) {
+        let Ok(slot) = u32::try_from(id - 1) else { return };
+        let Some(doc) = self.docs.get_mut(slot as usize).and_then(Option::take) else {
+            return;
+        };
+        for tid in doc.terms {
+            let p = &mut self.post[tid as usize];
+            if let Ok(i) = p.binary_search_by_key(&slot, |(s, _)| *s) {
+                p.remove(i);
+            }
+        }
+        for slots in self.by_path.values_mut() {
+            slots.retain(|s| *s != slot);
+        }
+        self.total_len -= doc.len as u64;
+        self.total_tri -= doc.tri_len as u64;
+        self.live -= 1;
+    }
+
+    pub fn len(&self) -> usize {
+        self.live
+    }
+
     pub fn get(&self, id: i64) -> Option<&Doc> {
         let slot = usize::try_from(id - 1).ok()?;
         self.docs.get(slot)?.as_ref()
@@ -268,6 +292,9 @@ mod tests {
         assert_eq!(f.search(&[ph("cach", true)], [4.0, 3.0, 1.0, 1.0], None, 5), vec![a]);
         assert_eq!(f.search(&[ph("run", true)], [4.0, 3.0, 1.0, 1.0], None, 5), vec![b]);
         assert_eq!(f.substring(&["LOCKFILE".into()], None, 5), vec![a]);
+        let c = f.insert("/n/c.md", "p", "c", "", "", "lockfile notes");
+        f.remove_id(c);
+        assert_eq!(f.substring(&["lockfile".into()], None, 5), vec![a]);
         f.remove_path("/n/a.md");
         assert!(f.search(&[ph("cach", true)], [4.0, 3.0, 1.0, 1.0], None, 5).is_empty());
         assert!(f.get(a).is_none());

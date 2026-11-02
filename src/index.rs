@@ -6,6 +6,7 @@
 
 use crate::embed::{Embedder, dot};
 use crate::fts::{Fts, Phrase};
+use crate::transcripts::{ID_BASE, Transcripts};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,25 @@ pub struct Chunk {
     pub body: String,
 }
 
+/// Which index a search covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Notes,
+    History,
+    All,
+}
+
+impl Source {
+    pub fn parse(s: &str) -> Option<Source> {
+        match s {
+            "notes" => Some(Source::Notes),
+            "history" | "transcripts" => Some(Source::History),
+            "all" => Some(Source::All),
+            _ => None,
+        }
+    }
+}
+
 pub struct Hit {
     pub id: i64,
     pub project: String,
@@ -125,6 +145,9 @@ pub struct Index {
     emb: Option<Arc<Embedder>>,
     /// Pick up newly created ~/.claude/projects/*/memory dirs on every refresh.
     pub watch_claude: bool,
+    /// Claude Code session transcripts, indexed separately; `None` = disabled.
+    /// Built lazily on the first history search, then updated incrementally.
+    pub hist: Option<Transcripts>,
     /// Passage embeddings per file: (chunk rowid, unit vector).
     vecs: HashMap<PathBuf, Vec<(i64, Vec<f32>)>>,
 }
@@ -153,6 +176,7 @@ impl Index {
             emb,
             vecs: HashMap::new(),
             watch_claude: false,
+            hist: None,
         };
         idx.refresh()?;
         Ok(idx)
@@ -263,7 +287,84 @@ impl Index {
     /// Hybrid search: BM25 over words (+ trigram fallback for identifiers like IPs),
     /// fused with embedding similarity when a model is loaded, then at most
     /// `per_note` sections per note.
+    /// Notes only (the default everywhere except an explicit `source`).
     pub fn search(&mut self, query: &str, limit: usize, project: Option<&str>) -> Result<Vec<Hit>> {
+        self.search_in(query, limit, project, Source::Notes)
+    }
+
+    /// Search curated notes, past conversations (transcripts), or both. With `All`,
+    /// the two rankings are merged by reciprocal rank so neither index's score scale
+    /// dominates; ties go to notes.
+    pub fn search_in(&mut self, query: &str, limit: usize, project: Option<&str>, source: Source) -> Result<Vec<Hit>> {
+        let ids = match source {
+            Source::Notes => self.note_ids(query, limit, project)?,
+            Source::History => self.history_ids(query, limit, project),
+            Source::All => {
+                let notes = self.note_ids(query, limit, project)?;
+                let hist = self.history_ids(query, limit, project);
+                let k = 60.0;
+                let mut score: HashMap<i64, f64> = HashMap::new();
+                for (r, id) in notes.iter().enumerate() {
+                    *score.entry(*id).or_default() += 1.0 / (k + r as f64 + 1.0) + 1e-9;
+                }
+                for (r, id) in hist.iter().enumerate() {
+                    *score.entry(*id).or_default() += 1.0 / (k + r as f64 + 1.0);
+                }
+                let mut v: Vec<(i64, f64)> = score.into_iter().collect();
+                v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                v.into_iter().map(|(id, _)| id).collect()
+            }
+        };
+        // Keep at most `per_note` sections per note (or per session) so one long
+        // note can't crowd every other note out of the results.
+        let mut per: HashMap<String, usize> = HashMap::new();
+        let mut hits = Vec::new();
+        for h in ids.into_iter().filter_map(|id| self.hit(id)) {
+            let n = per.entry(format!("{}/{}", h.project, h.file)).or_default();
+            if *n < self.tune.per_note {
+                *n += 1;
+                hits.push(h);
+                if hits.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(hits)
+    }
+
+    /// Transcript ids, best first: identifiers, then words, then substrings.
+    fn history_ids(&mut self, query: &str, limit: usize, project: Option<&str>) -> Vec<i64> {
+        const POOL: usize = 40;
+        let Some(hist) = self.hist.as_mut() else { return vec![] };
+        hist.refresh(&crate::config::claude_project_dirs());
+        let phrases = query_phrases(query, self.tune.prefix, self.tune.stop);
+        let ((wf, wh, wb), wc) = (self.tune.w, self.tune.wc);
+        let idents: Vec<String> = substring_terms(query)
+            .into_iter()
+            .filter(|t| is_identifier(t))
+            .collect();
+        let mut ids = if self.tune.ident && !idents.is_empty() {
+            hist.substring(&idents, project, POOL)
+        } else {
+            Vec::new()
+        };
+        for id in hist.search(&phrases, [wf, wh, wc, wb], project, POOL) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if ids.len() < limit {
+            for id in hist.substring(&substring_terms(query), project, POOL) {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
+    }
+
+    /// Note ids, best first (before the per-note cap).
+    fn note_ids(&mut self, query: &str, limit: usize, project: Option<&str>) -> Result<Vec<i64>> {
         const POOL: usize = 40;
         self.refresh()?;
         let phrases = query_phrases(query, self.tune.prefix, self.tune.stop);
@@ -308,22 +409,7 @@ impl Index {
             }
             None => bm,
         };
-        let ranked = ranked.into_iter().filter_map(|id| self.hit(id));
-        // Keep at most `per_note` sections per note so one long note can't
-        // crowd every other note out of the results.
-        let mut per: HashMap<String, usize> = HashMap::new();
-        let mut hits = Vec::new();
-        for h in ranked {
-            let n = per.entry(format!("{}/{}", h.project, h.file)).or_default();
-            if *n < self.tune.per_note {
-                *n += 1;
-                hits.push(h);
-                if hits.len() == limit {
-                    break;
-                }
-            }
-        }
-        Ok(hits)
+        Ok(ranked)
     }
 
     /// Sections ranked by their best passage's cosine similarity to the query.
@@ -352,7 +438,12 @@ impl Index {
     }
 
     fn hit(&self, id: i64) -> Option<Hit> {
-        self.fts.get(id).map(|d| Hit {
+        let doc = if id >= ID_BASE {
+            self.hist.as_ref()?.get(id)
+        } else {
+            self.fts.get(id)
+        };
+        doc.map(|d| Hit {
             id,
             project: d.project.clone(),
             file: d.file.clone(),

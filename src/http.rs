@@ -40,6 +40,9 @@ pub fn run(listen: &str, configs: Vec<Config>) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
         index.watch_claude = cfg.watch_claude;
+        if cfg.transcripts {
+            index.hist = Some(crate::transcripts::Transcripts::default());
+        }
         eprintln!(
             "memdex http: client `{}` → {} notes, write={}",
             cfg.agent,

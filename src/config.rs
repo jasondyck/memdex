@@ -29,6 +29,10 @@ pub struct Config {
     /// Re-scan ~/.claude/projects on every call so a project's FIRST memory is
     /// found mid-session (set by `claude-dirs` and the no-config default).
     pub watch_claude: bool,
+    /// Also search Claude Code session transcripts (`search` with `source`).
+    /// On for the no-config default (Claude itself); off unless asked for elsewhere,
+    /// because transcripts contain everything, work sessions included.
+    pub transcripts: bool,
 }
 
 pub const SHARED_LABEL: &str = "shared";
@@ -86,6 +90,25 @@ pub fn default_model() -> Option<PathBuf> {
 
 pub const DEFAULT_MODEL: &str = "potion-base-8M";
 
+/// Every Claude Code project dir (`~/.claude/projects/<dir>`, where its session
+/// `*.jsonl` transcripts live), labelled like that project's memory notes.
+pub fn claude_project_dirs() -> Vec<(PathBuf, String)> {
+    let root = home().join(".claude/projects");
+    let mut dirs: Vec<(PathBuf, String)> = fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|p| {
+            let l = claude_label(&p.join("memory"));
+            (p, l)
+        })
+        .collect();
+    dirs.sort();
+    dirs
+}
+
 pub fn claude_dirs() -> Vec<(PathBuf, String)> {
     let root = home().join(".claude/projects");
     let mut dirs: Vec<(PathBuf, String)> = fs::read_dir(&root)
@@ -113,6 +136,7 @@ impl Config {
             token: None,
             model: None,
             watch_claude: false,
+            transcripts: false,
         }
     }
 
@@ -123,6 +147,7 @@ impl Config {
         c.agent = "claude".into();
         c.dirs = claude_dirs();
         c.watch_claude = true;
+        c.transcripts = true;
         c.set_write_dir(home().join("memory"));
         c
     }
@@ -185,6 +210,8 @@ impl Config {
                 "token" => c.token = Some(need(arg)?),
                 "read-only" => c.write_dir = None,
                 "model" => c.model = Some(expand(&need(arg)?)),
+                "transcripts" => c.transcripts = true,
+                "no-transcripts" => c.transcripts = false,
                 "no-model" => c.model = None,
                 other => return Err(format!("line {}: unknown directive `{other}`", n + 1)),
             }

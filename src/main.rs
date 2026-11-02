@@ -18,9 +18,10 @@ mod http;
 mod index;
 mod porter;
 mod remember;
+mod transcripts;
 
 use config::Config;
-use index::{Hit, Index, Tuning, read_file};
+use index::{Hit, Index, Source, Tuning, read_file};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -83,6 +84,13 @@ impl Server {
              about their setup or projects, call `search` with the key nouns (service, host, error text, port); \
              use `read` for more. Results are past notes: verify live state (ports, paths, IPs) before acting.",
         );
+        if self.index.hist.is_some() {
+            s.push_str(
+                " Past conversations (Claude Code session transcripts) are searchable too: pass `source: \"history\"` \
+                 for \"what did we discuss/decide about X\" or when the notes don't settle it (`\"all\"` = both). \
+                 Notes are curated; transcripts are raw and may be outdated.",
+            );
+        }
         if self.cfg.write_dir.is_some() {
             s.push_str(
                 " When you learn something durable (a fix that worked and why, a gotcha, a decision, a changed \
@@ -105,7 +113,8 @@ impl Server {
                         "query": {"type": "string", "description": "Key words, e.g. `ci cache key` or `203.0.113.7`"},
                         "limit": {"type": "integer", "description": "Max results (default 3, max 20)"},
                         "project": {"type": "string", "description": "Only notes whose project label contains this, e.g. `home`, `shared`, `projects-webshop`"},
-                        "full": {"type": "boolean", "description": "Return whole sections instead of focused snippets"}
+                        "full": {"type": "boolean", "description": "Return whole sections instead of focused snippets"},
+                        "source": {"type": "string", "enum": ["notes", "history", "all"], "description": "notes (default): curated memory notes; history: past conversations (session transcripts); all: both"}
                     },
                     "required": ["query"]
                 }
@@ -154,7 +163,17 @@ impl Server {
                     .unwrap_or(DEFAULT_LIMIT)
                     .clamp(1, 20) as usize;
                 let full = args.get("full").and_then(Value::as_bool).unwrap_or(false);
-                let hits = self.index.search(q, limit, s("project")).map_err(|e| e.to_string())?;
+                let source = match s("source") {
+                    None => Source::Notes,
+                    Some(v) => Source::parse(v).ok_or("`source` must be notes, history or all")?,
+                };
+                if source != Source::Notes && self.index.hist.is_none() {
+                    return Err("transcript search is not enabled for this agent".into());
+                }
+                let hits = self
+                    .index
+                    .search_in(q, limit, s("project"), source)
+                    .map_err(|e| e.to_string())?;
                 Ok(format_hits_n(&self.index, &hits, full, SNIPPET_CHARS, Some(q)))
             }
             "read" => {
@@ -296,6 +315,12 @@ fn main() {
     let read_only = take_flag(&mut args, "--read-only");
     let quiet = take_flag(&mut args, "--quiet");
     let no_model = take_flag(&mut args, "--no-model");
+    let with_transcripts = take_flag(&mut args, "--transcripts");
+    let no_transcripts = take_flag(&mut args, "--no-transcripts");
+    let source = take_all(&mut args, "--source")
+        .pop()
+        .map(|v| Source::parse(&v).unwrap_or_else(|| die("--source must be notes, history or all")))
+        .unwrap_or(Source::Notes);
     let model_arg = take_all(&mut args, "--model").pop();
     let snip: usize = take_all(&mut args, "--snip")
         .pop()
@@ -351,6 +376,9 @@ fn main() {
     let mut index = Index::with_model(cfg.dirs.clone(), cfg.exclude.clone(), tune, emb)
         .unwrap_or_else(|e| die(format!("index failed: {e}")));
     index.watch_claude = cfg.watch_claude;
+    if (cfg.transcripts || with_transcripts) && !no_transcripts {
+        index.hist = Some(transcripts::Transcripts::default());
+    }
     let built = t0.elapsed();
     let mut srv = Server { index, cfg };
     match cmd.as_str() {
@@ -368,7 +396,7 @@ fn main() {
         "search" => {
             let q = args[1..].join(" ");
             let t = Instant::now();
-            let hits = srv.index.search(&q, limit, None).unwrap_or_else(|e| die(e));
+            let hits = srv.index.search_in(&q, limit, None, source).unwrap_or_else(|e| die(e));
             println!("{}", format_hits_n(&srv.index, &hits, false, snip, Some(q.as_str())));
             eprintln!(
                 "-- {} notes indexed in {built:?}; query took {:?}",
@@ -430,7 +458,15 @@ fn main() {
                 );
             }
         }
-        "bench" => bench(&mut srv, args.get(1).map(PathBuf::from), limit, snip, quiet, built),
+        "bench" => bench(
+            &mut srv,
+            args.get(1).map(PathBuf::from),
+            limit,
+            snip,
+            quiet,
+            built,
+            source,
+        ),
         _ => die("usage: memdex [serve|http|search|read|remember|bench] … (see source header)"),
     }
 }
@@ -438,7 +474,15 @@ fn main() {
 /// `memdex bench CASES.tsv`: accuracy + latency + output size over labelled queries.
 /// Each line: `query<TAB>expected-note[,alt…][<TAB>answer substring]`.
 /// "ans" = the answer substring appears in what the agent actually receives.
-fn bench(srv: &mut Server, cases: Option<PathBuf>, limit: usize, snip: usize, quiet: bool, built: std::time::Duration) {
+fn bench(
+    srv: &mut Server,
+    cases: Option<PathBuf>,
+    limit: usize,
+    snip: usize,
+    quiet: bool,
+    built: std::time::Duration,
+    source: Source,
+) {
     let path = cases.unwrap_or_else(|| die("usage: memdex bench CASES.tsv"));
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| die(e));
     let (mut n, mut top1, mut top3, mut topk, mut rr, mut bytes) = (0, 0, 0, 0, 0.0f64, 0usize);
@@ -452,7 +496,7 @@ fn bench(srv: &mut Server, cases: Option<PathBuf>, limit: usize, snip: usize, qu
         }
         let (q, want) = (cols[0], cols[1].split(',').map(str::trim).collect::<Vec<_>>());
         let t = Instant::now();
-        let hits = srv.index.search(q, limit, None).unwrap_or_default();
+        let hits = srv.index.search_in(q, limit, None, source).unwrap_or_default();
         times.push(t.elapsed().as_secs_f64() * 1000.0);
         let shown = format_hits_n(&srv.index, &hits, false, snip, Some(q));
         bytes += shown.len();
