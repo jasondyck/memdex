@@ -4,12 +4,12 @@
 //! index lives only in RAM. Every query first re-stats the files and re-indexes
 //! any that changed, so results never go stale.
 
-use crate::embed::{dot, Embedder};
-use rusqlite::{params, Connection};
-use std::sync::Arc;
+use crate::embed::{Embedder, dot};
+use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 /// Ranking / chunking knobs. Defaults are the benchmarked best; `memdex bench
@@ -47,7 +47,20 @@ impl Default for Tuning {
         // Chosen 2026-11-02 by sweeping 768 configs on 94 tuning questions and confirming on
         // 43 untouched held-out ones (bench/README): note-sized chunks rank best once
         // snippets are query-focused; the hidden context column adds a little MRR.
-        Tuning { w: (4.0, 3.0, 1.0), prefix: true, stop: true, per_note: 2, max_chunk: 4000, target_chunk: 3000, wc: 1.0, focus: true, sem: 0.0, rrf: 60.0, pass: 400, sfocus: false }
+        Tuning {
+            w: (4.0, 3.0, 1.0),
+            prefix: true,
+            stop: true,
+            per_note: 2,
+            max_chunk: 4000,
+            target_chunk: 3000,
+            wc: 1.0,
+            focus: true,
+            sem: 0.0,
+            rrf: 60.0,
+            pass: 400,
+            sfocus: false,
+        }
     }
 }
 
@@ -56,7 +69,10 @@ impl Tuning {
         let mut t = Tuning::default();
         for kv in spec.split_whitespace() {
             let (k, v) = kv.split_once('=').ok_or(format!("bad tune `{kv}`"))?;
-            let nums: Vec<f64> = v.split(',').map(|x| x.parse::<f64>().map_err(|e| format!("{kv}: {e}"))).collect::<Result<_, _>>()?;
+            let nums: Vec<f64> = v
+                .split(',')
+                .map(|x| x.parse::<f64>().map_err(|e| format!("{kv}: {e}")))
+                .collect::<Result<_, _>>()?;
             let b = nums.first().copied().unwrap_or(0.0) != 0.0;
             match (k, nums.len()) {
                 ("w", 3) => t.w = (nums[0], nums[1], nums[2]),
@@ -129,7 +145,16 @@ impl Index {
                  tokenize = 'porter unicode61 remove_diacritics 2');
              CREATE VIRTUAL TABLE tri USING fts5(body, tokenize = 'trigram');",
         )?;
-        let mut idx = Index { conn, dirs, exclude, seen: HashMap::new(), tune, emb, vecs: HashMap::new(), watch_claude: false };
+        let mut idx = Index {
+            conn,
+            dirs,
+            exclude,
+            seen: HashMap::new(),
+            tune,
+            emb,
+            vecs: HashMap::new(),
+            watch_claude: false,
+        };
         idx.refresh()?;
         Ok(idx)
     }
@@ -137,11 +162,17 @@ impl Index {
     /// Label of the configured directory holding `p`.
     pub fn label_of(&self, p: &Path) -> String {
         let parent = p.parent();
-        self.dirs.iter().find(|(d, _)| Some(d.as_path()) == parent).map(|(_, l)| l.clone()).unwrap_or_default()
+        self.dirs
+            .iter()
+            .find(|(d, _)| Some(d.as_path()) == parent)
+            .map(|(_, l)| l.clone())
+            .unwrap_or_default()
     }
 
     fn excluded(&self, label: &str, stem: &str) -> bool {
-        self.exclude.iter().any(|e| e == stem || *e == format!("{label}/{stem}"))
+        self.exclude
+            .iter()
+            .any(|e| e == stem || *e == format!("{label}/{stem}"))
     }
 
     /// Every visible `*.md` note in the configured directories (non-recursive).
@@ -151,7 +182,10 @@ impl Index {
             let Ok(rd) = fs::read_dir(dir) else { continue };
             for e in rd.flatten() {
                 let p = e.path();
-                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 // MEMORY.md is the index Claude Code already loads into every session.
                 if !name.ends_with(".md") || name == "MEMORY.md" || name == "README.md" || name.starts_with('.') {
                     continue;
@@ -178,10 +212,13 @@ impl Index {
         }
         let current: HashMap<PathBuf, SystemTime> = self.files().into_iter().collect();
         let mut changed = 0;
-        let removed: Vec<PathBuf> =
-            self.seen.keys().filter(|p| !current.contains_key(*p)).cloned().collect();
-        let labels: HashMap<PathBuf, String> =
-            current.keys().map(|p| (p.clone(), self.label_of(p))).collect();
+        let removed: Vec<PathBuf> = self
+            .seen
+            .keys()
+            .filter(|p| !current.contains_key(*p))
+            .cloned()
+            .collect();
+        let labels: HashMap<PathBuf, String> = current.keys().map(|p| (p.clone(), self.label_of(p))).collect();
         let tx = self.conn.transaction()?;
         for p in &removed {
             delete_path(&tx, p)?;
@@ -334,7 +371,9 @@ impl Index {
     }
 
     fn chunk_row(&self, id: i64) -> rusqlite::Result<Option<Hit>> {
-        let mut st = self.conn.prepare_cached("SELECT rowid, project, file, heading, body FROM chunks WHERE rowid = ?1")?;
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT rowid, project, file, heading, body FROM chunks WHERE rowid = ?1")?;
         let mut rows = st.query_map(params![id], row_to_hit)?;
         rows.next().transpose()
     }
@@ -344,11 +383,21 @@ impl Index {
     pub fn snippet(&self, body: &str, query: &str, budget: usize) -> String {
         if !self.tune.focus {
             let cut: String = body.chars().take(budget).collect();
-            return if cut.len() < body.len() { format!("{cut}…") } else { cut };
+            return if cut.len() < body.len() {
+                format!("{cut}…")
+            } else {
+                cut
+            };
         }
-        let qv = if self.tune.sfocus { self.emb.as_ref().and_then(|e| e.embed(query).map(|v| (e, v))) } else { None };
+        let qv = if self.tune.sfocus {
+            self.emb.as_ref().and_then(|e| e.embed(query).map(|v| (e, v)))
+        } else {
+            None
+        };
         match qv {
-            Some((e, v)) => focus_snippet_with(body, query, budget, &|l: &str| e.embed(l).map(|lv| dot(&v, &lv)).unwrap_or(0.0)),
+            Some((e, v)) => focus_snippet_with(body, query, budget, &|l: &str| {
+                e.embed(l).map(|lv| dot(&v, &lv)).unwrap_or(0.0)
+            }),
             None => focus_snippet(body, query, budget),
         }
     }
@@ -408,24 +457,35 @@ fn passages(file: &str, c: &Chunk, pass: usize) -> Vec<String> {
 }
 
 fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {
-    Ok(Hit { id: r.get(0)?, project: r.get(1)?, file: r.get(2)?, heading: r.get(3)?, body: r.get(4)? })
+    Ok(Hit {
+        id: r.get(0)?,
+        project: r.get(1)?,
+        file: r.get(2)?,
+        heading: r.get(3)?,
+        body: r.get(4)?,
+    })
 }
 
 fn delete_path(conn: &Connection, p: &Path) -> rusqlite::Result<()> {
     let path = p.to_string_lossy();
-    conn.execute("DELETE FROM tri WHERE rowid IN (SELECT rowid FROM chunks WHERE path = ?1)", params![path])?;
+    conn.execute(
+        "DELETE FROM tri WHERE rowid IN (SELECT rowid FROM chunks WHERE path = ?1)",
+        params![path],
+    )?;
     conn.execute("DELETE FROM chunks WHERE path = ?1", params![path])?;
     Ok(())
 }
 
 fn stem(p: &Path) -> String {
-    p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    p.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 const STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how", "i", "in", "is",
-    "it", "me", "my", "of", "on", "or", "that", "the", "this", "to", "was", "what", "when", "where",
-    "which", "who", "why", "with", "you", "your", "we", "our", "can", "should", "about", "use", "used",
+    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how", "i", "in", "is", "it", "me",
+    "my", "of", "on", "or", "that", "the", "this", "to", "was", "what", "when", "where", "which", "who", "why", "with",
+    "you", "your", "we", "our", "can", "should", "about", "use", "used",
 ];
 
 /// Free text → FTS5 query: each meaningful word as a quoted prefix term, OR-ed so
@@ -446,7 +506,13 @@ pub fn word_query_with(q: &str, prefix: bool, stop: bool) -> Option<String> {
         return None;
     }
     let star = if prefix { "*" } else { "" };
-    Some(terms.iter().map(|t| format!("\"{t}\"{star}")).collect::<Vec<_>>().join(" OR "))
+    Some(
+        terms
+            .iter()
+            .map(|t| format!("\"{t}\"{star}"))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
 }
 
 /// Raw whitespace-separated terms (≥3 chars) for the trigram table, so
@@ -512,7 +578,9 @@ pub fn focus_snippet_with(body: &str, query: &str, budget: usize, sim: &dyn Fn(&
             let at = stems.iter().filter_map(|s| low.find(s.as_str())).min().unwrap_or(0);
             let chars: Vec<char> = lines[i].chars().collect();
             let char_at = lines[i][..at.min(lines[i].len())].chars().count();
-            let start = char_at.saturating_sub(budget / 3).min(chars.len().saturating_sub(budget));
+            let start = char_at
+                .saturating_sub(budget / 3)
+                .min(chars.len().saturating_sub(budget));
             let end = (start + budget).min(chars.len());
             let pre = if start > 0 { "…" } else { "" };
             let post = if end < chars.len() { "…" } else { "" };
@@ -551,14 +619,22 @@ pub fn chunk_markdown_with(text: &str, t: &Tuning) -> Vec<Chunk> {
     let mut ctx = String::new();
     if let Some((name, desc)) = meta {
         ctx = format!("{name}: {desc}");
-        out.push(Chunk { heading: "(summary)".into(), ctx: String::new(), body: ctx.clone() });
+        out.push(Chunk {
+            heading: "(summary)".into(),
+            ctx: String::new(),
+            body: ctx.clone(),
+        });
     }
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut cur = String::new();
     let flush = |stack: &[(usize, String)], cur: &mut String, out: &mut Vec<Chunk>| {
         let heading = stack.iter().map(|(_, h)| h.as_str()).collect::<Vec<_>>().join(" > ");
         for piece in split_long(cur.trim(), t.max_chunk, t.target_chunk) {
-            out.push(Chunk { heading: heading.clone(), ctx: ctx.clone(), body: piece });
+            out.push(Chunk {
+                heading: heading.clone(),
+                ctx: ctx.clone(),
+                body: piece,
+            });
         }
         cur.clear();
     };
@@ -582,13 +658,21 @@ pub fn chunk_markdown_with(text: &str, t: &Tuning) -> Vec<Chunk> {
 }
 
 fn split_frontmatter(text: &str) -> (Option<(String, String)>, &str) {
-    let Some(rest) = text.strip_prefix("---\n") else { return (None, text) };
-    let Some(end) = rest.find("\n---") else { return (None, text) };
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return (None, text);
+    };
+    let Some(end) = rest.find("\n---") else {
+        return (None, text);
+    };
     let fm = &rest[..end];
     let body = rest[end + 4..].trim_start_matches('-').trim_start_matches('\n');
     let get = |key: &str| {
         fm.lines()
-            .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().trim_matches('"').to_string()))
+            .find_map(|l| {
+                l.trim()
+                    .strip_prefix(key)
+                    .map(|v| v.trim().trim_matches('"').to_string())
+            })
             .unwrap_or_default()
     };
     let (name, desc) = (get("name:"), get("description:"));
@@ -610,7 +694,8 @@ fn split_long(s: &str, max: usize, target: usize) -> Vec<String> {
     let mut blocks: Vec<String> = Vec::new();
     let mut b = String::new();
     for line in s.lines() {
-        let boundary = line.trim().is_empty() || line.starts_with("- ") || line.starts_with("* ") || line.starts_with("**");
+        let boundary =
+            line.trim().is_empty() || line.starts_with("- ") || line.starts_with("* ") || line.starts_with("**");
         if boundary && !b.trim().is_empty() {
             blocks.push(std::mem::take(&mut b));
         }
@@ -642,7 +727,9 @@ fn split_long(s: &str, max: usize, target: usize) -> Vec<String> {
 pub fn read_file(path: &Path, section: Option<&str>) -> Result<String, String> {
     let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let (_, body) = split_frontmatter(&text);
-    let Some(sec) = section.map(str::to_lowercase) else { return Ok(body.to_string()) };
+    let Some(sec) = section.map(str::to_lowercase) else {
+        return Ok(body.to_string());
+    };
     let mut out = String::new();
     let mut take_level: Option<usize> = None;
     let mut in_code = false;
@@ -686,7 +773,8 @@ fn split_long_all(s: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut b = String::new();
     for line in s.lines() {
-        let boundary = line.trim().is_empty() || line.starts_with("- ") || line.starts_with("* ") || line.starts_with("**");
+        let boundary =
+            line.trim().is_empty() || line.starts_with("- ") || line.starts_with("* ") || line.starts_with("**");
         if boundary && !b.trim().is_empty() {
             blocks.push(std::mem::take(&mut b).trim().to_string());
         }
@@ -726,8 +814,14 @@ mod tests {
 
     #[test]
     fn long_sections_split_at_bullets() {
-        let body: String = (0..40).map(|i| format!("- bullet number {i} with some padding text here\n")).collect();
-        let t = Tuning { max_chunk: 1200, target_chunk: 800, ..Tuning::default() };
+        let body: String = (0..40)
+            .map(|i| format!("- bullet number {i} with some padding text here\n"))
+            .collect();
+        let t = Tuning {
+            max_chunk: 1200,
+            target_chunk: 800,
+            ..Tuning::default()
+        };
         let c = chunk_markdown_with(&format!("# H\n{body}"), &t);
         assert!(c.len() > 1);
         assert!(c.iter().all(|x| x.body.len() <= t.max_chunk && x.heading == "H"));
@@ -735,14 +829,19 @@ mod tests {
 
     #[test]
     fn queries_drop_stopwords_and_quote_terms() {
-        assert_eq!(word_query("What port is Grafana on?").unwrap(), "\"port\"* OR \"grafana\"*");
+        assert_eq!(
+            word_query("What port is Grafana on?").unwrap(),
+            "\"port\"* OR \"grafana\"*"
+        );
         assert_eq!(trigram_query("what is 203.0.113.7?").unwrap(), "\"203.0.113.7\"");
         assert!(word_query("the of is").is_none());
     }
 
     #[test]
     fn focus_snippet_prefers_matching_lines() {
-        let body: String = (0..30).map(|i| format!("- filler line number {i} about nothing much\n")).collect::<String>()
+        let body: String = (0..30)
+            .map(|i| format!("- filler line number {i} about nothing much\n"))
+            .collect::<String>()
             + "- Grafana is on port 3000\n";
         let s = focus_snippet(&body, "what port is grafana on", 200);
         assert!(s.contains("3000"), "{s}");
@@ -778,7 +877,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(mem.join("db.md"), "# Database\nnow using sqlite\n").unwrap();
         let f = fs::File::options().append(true).open(mem.join("db.md")).unwrap();
-        f.set_modified(SystemTime::now() + std::time::Duration::from_secs(1)).unwrap();
+        f.set_modified(SystemTime::now() + std::time::Duration::from_secs(1))
+            .unwrap();
         assert!(idx.search("postgres", 5, None).unwrap().is_empty());
         assert_eq!(idx.search("sqlite", 5, None).unwrap().len(), 1);
         fs::remove_dir_all(&root).unwrap();

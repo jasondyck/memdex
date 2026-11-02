@@ -29,8 +29,20 @@ pub fn slugify(topic: &str) -> Option<String> {
 
 /// Why `text` looks like it contains a credential, if it does.
 pub fn looks_secret(text: &str) -> Option<&'static str> {
-    const PREFIXES: &[&str] =
-        &["sk-", "sk_live_", "ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "tskey-", "xoxb-", "xoxp-", "AKIA", "hf_"];
+    const PREFIXES: &[&str] = &[
+        "sk-",
+        "sk_live_",
+        "ghp_",
+        "gho_",
+        "ghs_",
+        "github_pat_",
+        "glpat-",
+        "tskey-",
+        "xoxb-",
+        "xoxp-",
+        "AKIA",
+        "hf_",
+    ];
     if text.contains("-----BEGIN") {
         return Some("a PEM key block");
     }
@@ -52,9 +64,11 @@ pub fn looks_secret(text: &str) -> Option<&'static str> {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             let v = w[i + 1..].split('&').next().unwrap_or("");
-            let credential_key = ["password", "passwd", "pwd", "secret", "token", "apikey", "api_key", "api-key", "auth"]
-                .iter()
-                .any(|n| k.ends_with(n));
+            let credential_key = [
+                "password", "passwd", "pwd", "secret", "token", "apikey", "api_key", "api-key", "auth",
+            ]
+            .iter()
+            .any(|n| k.ends_with(n));
             if credential_key && v.len() >= 6 && !v.starts_with('<') && !v.starts_with("${") && !v.starts_with("***") {
                 return Some("a credential assignment");
             }
@@ -134,7 +148,10 @@ pub fn remember(
     let path = vault.join(format!("{stem}.md"));
     let date = today();
     // Continuation lines are indented so the fact stays one markdown bullet.
-    let bullet = format!("- {date} ({agent}): {}\n", fact.lines().collect::<Vec<_>>().join("\n  "));
+    let bullet = format!(
+        "- {date} ({agent}): {}\n",
+        fact.lines().collect::<Vec<_>>().join("\n  ")
+    );
     let created = !path.exists();
     let text = if created {
         let desc = one_line(description.unwrap_or(fact));
@@ -160,7 +177,11 @@ pub fn remember(
     fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
     commit(vault, &stem, agent, created);
     drop(lock);
-    Ok(format!("{} `{stem}` ({}).", if created { "Created" } else { "Added to" }, path.display()))
+    Ok(format!(
+        "{} `{stem}` ({}).",
+        if created { "Created" } else { "Added to" },
+        path.display()
+    ))
 }
 
 /// Best-effort git commit so every write is attributable and reversible.
@@ -170,12 +191,22 @@ fn commit(vault: &Path, stem: &str, agent: &str, created: bool) {
     }
     let file = format!("{stem}.md");
     let msg = format!("{agent}: {} {stem}", if created { "create" } else { "update" });
-    let ok = Command::new("git").arg("-C").arg(vault).args(["add", "--", &file]).status().is_ok_and(|s| s.success());
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(vault)
+        .args(["add", "--", &file])
+        .status()
+        .is_ok_and(|s| s.success());
     if ok {
         let _ = Command::new("git")
             .arg("-C")
             .arg(vault)
-            .args(["-c", &format!("user.name=memdex/{agent}"), "-c", "user.email=memdex@localhost"])
+            .args([
+                "-c",
+                &format!("user.name=memdex/{agent}"),
+                "-c",
+                "user.email=memdex@localhost",
+            ])
             .args(["commit", "-q", "--no-verify", "-m", &msg, "--", &file])
             .status();
     }
@@ -220,9 +251,25 @@ mod tests {
     fn creates_then_appends() {
         let v = std::env::temp_dir().join(format!("memdex-rem-{}", std::process::id()));
         let _ = fs::remove_dir_all(&v);
-        let r = remember(&v, "bot-a", "Build Cache", "CI cache is keyed on the lockfile", Some("CI cache notes"), None).unwrap();
+        let r = remember(
+            &v,
+            "bot-a",
+            "Build Cache",
+            "CI cache is keyed on the lockfile",
+            Some("CI cache notes"),
+            None,
+        )
+        .unwrap();
         assert!(r.starts_with("Created"));
-        remember(&v, "claude", "build-cache", "stale after toolchain bumps\nclear it manually", None, None).unwrap();
+        remember(
+            &v,
+            "claude",
+            "build-cache",
+            "stale after toolchain bumps\nclear it manually",
+            None,
+            None,
+        )
+        .unwrap();
         let t = fs::read_to_string(v.join("build-cache.md")).unwrap();
         assert!(t.starts_with("---\nname: build-cache\ndescription: CI cache notes\n"));
         assert!(t.contains("  source: bot-a\n"));

@@ -33,22 +33,41 @@ impl Embedder {
             return Err(err(&"model.safetensors too short"));
         }
         let hlen = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
-        let header: Value = serde_json::from_slice(bytes.get(8..8 + hlen).ok_or(err(&"bad header"))?).map_err(|e| err(&e))?;
+        let header: Value =
+            serde_json::from_slice(bytes.get(8..8 + hlen).ok_or(err(&"bad header"))?).map_err(|e| err(&e))?;
         let t = header.get("embeddings").ok_or(err(&"no `embeddings` tensor"))?;
         if t["dtype"] != "F32" {
             return Err(err(&format!("unsupported dtype {}", t["dtype"])));
         }
-        let shape: Vec<usize> = t["shape"].as_array().ok_or(err(&"no shape"))?.iter().filter_map(Value::as_u64).map(|x| x as usize).collect();
-        let off: Vec<usize> = t["data_offsets"].as_array().ok_or(err(&"no offsets"))?.iter().filter_map(Value::as_u64).map(|x| x as usize).collect();
+        let shape: Vec<usize> = t["shape"]
+            .as_array()
+            .ok_or(err(&"no shape"))?
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|x| x as usize)
+            .collect();
+        let off: Vec<usize> = t["data_offsets"]
+            .as_array()
+            .ok_or(err(&"no offsets"))?
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|x| x as usize)
+            .collect();
         let (rows, dim) = (shape[0], shape[1]);
-        let data = bytes.get(8 + hlen + off[0]..8 + hlen + off[1]).ok_or(err(&"data out of range"))?;
+        let data = bytes
+            .get(8 + hlen + off[0]..8 + hlen + off[1])
+            .ok_or(err(&"data out of range"))?;
         if data.len() != rows * dim * 4 {
             return Err(err(&"tensor size mismatch"));
         }
-        let table: Vec<f32> = data.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+        let table: Vec<f32> = data
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
 
         // --- tokenizer.json (HF tokenizers, WordPiece + BertNormalizer).
-        let tok: Value = serde_json::from_slice(&fs::read(dir.join("tokenizer.json")).map_err(|e| err(&e))?).map_err(|e| err(&e))?;
+        let tok: Value =
+            serde_json::from_slice(&fs::read(dir.join("tokenizer.json")).map_err(|e| err(&e))?).map_err(|e| err(&e))?;
         let model = &tok["model"];
         if model["type"] != "WordPiece" {
             return Err(err(&"only WordPiece tokenizers are supported"));
@@ -64,8 +83,20 @@ impl Embedder {
         let lowercase = tok["normalizer"]["lowercase"].as_bool().unwrap_or(true);
         let prefix = model["continuing_subword_prefix"].as_str().unwrap_or("##").to_string();
         let max_word_chars = model["max_input_chars_per_word"].as_u64().unwrap_or(100) as usize;
-        let name = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Embedder { dim, vocab, unk, table, lowercase, prefix, max_word_chars, name })
+        let name = dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Embedder {
+            dim,
+            vocab,
+            unk,
+            table,
+            lowercase,
+            prefix,
+            max_word_chars,
+            name,
+        })
     }
 
     /// BERT basic tokenisation: clean, lowercase, split on whitespace and punctuation.

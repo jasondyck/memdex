@@ -89,7 +89,15 @@ pub fn claude_dirs() -> Vec<(PathBuf, String)> {
 
 impl Config {
     fn empty() -> Self {
-        Config { agent: "agent".into(), dirs: vec![], exclude: vec![], write_dir: None, token: None, model: None, watch_claude: false }
+        Config {
+            agent: "agent".into(),
+            dirs: vec![],
+            exclude: vec![],
+            write_dir: None,
+            token: None,
+            model: None,
+            watch_claude: false,
+        }
     }
 
     /// No config file: Claude Code on this machine — every Claude memory dir plus
@@ -115,10 +123,16 @@ impl Config {
             return;
         }
         let label = label.unwrap_or_else(|| {
-            if p.ends_with("memory") && p.parent().and_then(|x| x.parent()).is_some_and(|x| x.ends_with(".claude/projects")) {
+            if p.ends_with("memory")
+                && p.parent()
+                    .and_then(|x| x.parent())
+                    .is_some_and(|x| x.ends_with(".claude/projects"))
+            {
                 claude_label(&p)
             } else {
-                p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+                p.file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
             }
         });
         self.dirs.push((p, label));
@@ -134,7 +148,10 @@ impl Config {
             let mut it = line.split_whitespace();
             let key = it.next().unwrap_or("");
             let arg = it.next();
-            let need = |a: Option<&str>| a.map(str::to_string).ok_or(format!("line {}: `{key}` needs a value", n + 1));
+            let need = |a: Option<&str>| {
+                a.map(str::to_string)
+                    .ok_or(format!("line {}: `{key}` needs a value", n + 1))
+            };
             match key {
                 "agent" => c.agent = need(arg)?,
                 "claude-dirs" => {
@@ -170,7 +187,10 @@ impl Config {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(path).map(|m| m.permissions().mode()).unwrap_or(0);
             if mode & 0o077 != 0 {
-                return Err(format!("{} holds a token but is readable by others; chmod 600 it", path.display()));
+                return Err(format!(
+                    "{} holds a token but is readable by others; chmod 600 it",
+                    path.display()
+                ));
             }
         }
         Ok(c)

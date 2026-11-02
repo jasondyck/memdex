@@ -1,0 +1,89 @@
+name: release
+
+# Push a tag like v0.4.1 (must match Cargo.toml) to build static Linux binaries
+# and publish them as a GitHub release. No third-party actions: only `gh` and rustup
+# from the runner image, plus actions/checkout pinned to a commit.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  GH_REPO: ${{ github.repository }}
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  draft:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tag must match Cargo.toml version
+        run: |
+          v="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$v" != "$TAG" ]; then echo "::error::tag $TAG does not match Cargo.toml $v"; exit 1; fi
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" --draft --verify-tag --title "memdex $TAG" --generate-notes
+
+  build:
+    needs: draft
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (static musl build; SQLite is compiled in)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq musl-tools
+          rustup toolchain install stable --profile minimal --target "$TARGET" && rustup default stable
+          echo "CC_$(echo "$TARGET" | tr - _)=musl-gcc" >> "$GITHUB_ENV"
+      - name: Test
+        run: cargo test --locked --release
+      - name: Build
+        run: cargo build --locked --release --target "$TARGET"
+      - name: Package
+        run: |
+          bin="target/$TARGET/release/memdex"
+          file "$bin" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'
+          "$bin" --version | grep -qx "memdex ${TAG#v}"
+          name="memdex-$TARGET"
+          mkdir -p "dist/$name"
+          cp "$bin" README.md "dist/$name/"
+          cp -r deploy "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" && cat "$name.tar.gz.sha256")
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --draft=false --latest

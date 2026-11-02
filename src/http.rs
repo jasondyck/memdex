@@ -4,10 +4,10 @@
 //!
 //! Bind to 127.0.0.1 and publish with `tailscale serve`; TLS comes from there.
 
+use crate::Server;
 use crate::config::Config;
 use crate::index::Index;
-use crate::Server;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -24,16 +24,32 @@ pub struct Client {
 pub fn run(listen: &str, configs: Vec<Config>) -> Result<(), String> {
     let mut clients = Vec::new();
     for cfg in configs {
-        let token = cfg.token.clone().ok_or(format!("client `{}` has no token", cfg.agent))?;
+        let token = cfg
+            .token
+            .clone()
+            .ok_or(format!("client `{}` has no token", cfg.agent))?;
         let emb = match &cfg.model {
             Some(d) => Some(std::sync::Arc::new(crate::embed::Embedder::load(d)?)),
             None => None,
         };
-        let mut index = Index::with_model(cfg.dirs.clone(), cfg.exclude.clone(), crate::index::Tuning::default(), emb)
-            .map_err(|e| e.to_string())?;
+        let mut index = Index::with_model(
+            cfg.dirs.clone(),
+            cfg.exclude.clone(),
+            crate::index::Tuning::default(),
+            emb,
+        )
+        .map_err(|e| e.to_string())?;
         index.watch_claude = cfg.watch_claude;
-        eprintln!("memdex http: client `{}` → {} notes, write={}", cfg.agent, index.file_count(), cfg.write_dir.is_some());
-        clients.push(Client { token, server: Mutex::new(Server { index, cfg }) });
+        eprintln!(
+            "memdex http: client `{}` → {} notes, write={}",
+            cfg.agent,
+            index.file_count(),
+            cfg.write_dir.is_some()
+        );
+        clients.push(Client {
+            token,
+            server: Mutex::new(Server { index, cfg }),
+        });
     }
     let clients = Arc::new(clients);
     let listener = TcpListener::bind(listen).map_err(|e| format!("bind {listen}: {e}"))?;
@@ -82,7 +98,8 @@ fn handle_conn(mut stream: TcpStream, clients: &[Client]) -> Result<(), String> 
             break;
         }
         if seen > MAX_HEADERS {
-            return respond(&mut stream, "431 Request Header Fields Too Large", "text/plain", "", "").map_err(|e| e.to_string());
+            return respond(&mut stream, "431 Request Header Fields Too Large", "text/plain", "", "")
+                .map_err(|e| e.to_string());
         }
         if let Some((k, v)) = line.split_once(':') {
             match k.trim().to_ascii_lowercase().as_str() {
@@ -102,12 +119,25 @@ fn handle_conn(mut stream: TcpStream, clients: &[Client]) -> Result<(), String> 
     }
     let token = auth.strip_prefix("Bearer ").unwrap_or("");
     let Some(client) = clients.iter().find(|c| same(&c.token, token)) else {
-        return respond(&mut stream, "401 Unauthorized", "text/plain", "unauthorized\n", "WWW-Authenticate: Bearer\r\n")
-            .map_err(|e| e.to_string());
+        return respond(
+            &mut stream,
+            "401 Unauthorized",
+            "text/plain",
+            "unauthorized\n",
+            "WWW-Authenticate: Bearer\r\n",
+        )
+        .map_err(|e| e.to_string());
     };
     if method != "POST" {
         // No server-initiated stream; clients fall back to plain request/response.
-        return respond(&mut stream, "405 Method Not Allowed", "text/plain", "", "Allow: POST\r\n").map_err(|e| e.to_string());
+        return respond(
+            &mut stream,
+            "405 Method Not Allowed",
+            "text/plain",
+            "",
+            "Allow: POST\r\n",
+        )
+        .map_err(|e| e.to_string());
     }
     if len > MAX_BODY {
         return respond(&mut stream, "413 Payload Too Large", "text/plain", "", "").map_err(|e| e.to_string());

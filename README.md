@@ -113,13 +113,30 @@ which a static table can't supply — the calling LLM rewriting the question int
 key nouns is the cheaper fix. Models (MIT) live in `~/.local/share/memdex/models/`.
 
 ## Install
-Needs Rust ≥ 1.89 and a C compiler (SQLite is compiled in). On Ubuntu, the apt `cargo` is too
-old — use rustup:
+Prebuilt static binaries (Linux x86_64 and aarch64, no dependencies) are attached to each
+[GitHub release](https://github.com/jasondyck/memdex/releases):
+```sh
+curl -fsSL https://raw.githubusercontent.com/jasondyck/memdex/main/install.sh | sh
+claude mcp add --scope user memdex -- ~/.local/bin/memdex serve
+```
+The script picks your architecture, verifies the SHA-256 checksum and installs to
+`~/.local/bin` (`MEMDEX_VERSION=v0.4.1` pins a release, `MEMDEX_BIN_DIR` changes the location).
+Prefer not to pipe to `sh`? Download `memdex-<arch>-unknown-linux-musl.tar.gz` and its `.sha256`
+from the release page, run `sha256sum -c`, and copy `memdex` onto your PATH.
+
+### From source
+Needs Rust ≥ 1.89 and a C compiler (SQLite is compiled in). On Ubuntu the apt `cargo` is too old;
+use rustup:
 ```sh
 sudo apt install build-essential curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # then open a new shell
 cargo build --release && install -Dm755 target/release/memdex ~/.local/bin/memdex
-claude mcp add --scope user memdex -- ~/.local/bin/memdex serve
 ```
-Optional: `deploy/` has a systemd user timer for nightly backups of `~/memory` and the Claude
-memory dirs (`MEMDEX_BACKUP_DIR`), and a unit for the HTTP transport.
+`deploy/` has a systemd user timer for nightly backups of `~/memory` and the Claude memory dirs
+(`MEMDEX_BACKUP_DIR`), and a unit for the HTTP transport.
+
+## Releasing
+CI (`.github/workflows/ci.yml`) runs fmt, clippy and tests on every push. To release, bump
+`version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`:
+`release.yml` checks the tag matches `Cargo.toml`, runs the tests on each architecture, builds
+static musl binaries, and publishes them with checksums. It uses no third-party actions.

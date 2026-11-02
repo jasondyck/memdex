@@ -18,11 +18,11 @@ mod index;
 mod remember;
 
 use config::Config;
-use index::{read_file, Hit, Index, Tuning};
-use std::sync::Arc;
-use serde_json::{json, Value};
+use index::{Hit, Index, Tuning, read_file};
+use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,7 +50,11 @@ pub fn format_hits_n(idx: &Index, hits: &[Hit], full: bool, snip: usize, query: 
     }
     let mut out = String::new();
     for h in hits {
-        let heading = if h.heading.is_empty() { String::new() } else { format!(" › {}", h.heading) };
+        let heading = if h.heading.is_empty() {
+            String::new()
+        } else {
+            format!(" › {}", h.heading)
+        };
         out.push_str(&format!("[{}] {}/{}{}\n", h.id, h.project, h.file, heading));
         let body = match (full, query) {
             (true, _) => h.body.clone(),
@@ -142,7 +146,11 @@ impl Server {
         match name {
             "search" => {
                 let q = s("query").ok_or("`query` is required")?;
-                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(DEFAULT_LIMIT).clamp(1, 20) as usize;
+                let limit = args
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(DEFAULT_LIMIT)
+                    .clamp(1, 20) as usize;
                 let full = args.get("full").and_then(Value::as_bool).unwrap_or(false);
                 let hits = self.index.search(q, limit, s("project")).map_err(|e| e.to_string())?;
                 Ok(format_hits_n(&self.index, &hits, full, SNIPPET_CHARS, Some(q)))
@@ -151,7 +159,9 @@ impl Server {
                 if let Some(id) = args.get("id").and_then(Value::as_i64) {
                     return match self.index.chunk(id).map_err(|e| e.to_string())? {
                         Some(h) => Ok(format_hits_n(&self.index, &[h], true, 0, None)),
-                        None => Err(format!("no section with id {id} (ids change when a note is edited; search again)")),
+                        None => Err(format!(
+                            "no section with id {id} (ids change when a note is edited; search again)"
+                        )),
                     };
                 }
                 let file = s("file").ok_or("pass `id` or `file`")?;
@@ -159,7 +169,10 @@ impl Server {
                 let path = self.index.find_file(file, s("project"))?;
                 let text = read_file(&path, s("section"))?;
                 Ok(if text.chars().count() > READ_CAP {
-                    format!("{}\n\n[truncated at {READ_CAP} chars; pass `section` to read a part]", truncate(&text, READ_CAP))
+                    format!(
+                        "{}\n\n[truncated at {READ_CAP} chars; pass `section` to read a part]",
+                        truncate(&text, READ_CAP)
+                    )
                 } else {
                     text
                 })
@@ -262,18 +275,30 @@ fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V" | "version")) {
+        println!("memdex {VERSION}");
+        return;
+    }
     let configs = take_all(&mut args, "--config");
     let clients = take_all(&mut args, "--client");
     let dirs = take_all(&mut args, "--dir");
     let write_dirs = take_all(&mut args, "--write-dir");
     let agent = take_all(&mut args, "--agent").pop();
-    let listen = take_all(&mut args, "--listen").pop().unwrap_or_else(|| "127.0.0.1:8765".into());
-    let limit: usize = take_all(&mut args, "--limit").pop().and_then(|l| l.parse().ok()).unwrap_or(DEFAULT_LIMIT as usize);
+    let listen = take_all(&mut args, "--listen")
+        .pop()
+        .unwrap_or_else(|| "127.0.0.1:8765".into());
+    let limit: usize = take_all(&mut args, "--limit")
+        .pop()
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(DEFAULT_LIMIT as usize);
     let read_only = take_flag(&mut args, "--read-only");
     let quiet = take_flag(&mut args, "--quiet");
     let no_model = take_flag(&mut args, "--no-model");
     let model_arg = take_all(&mut args, "--model").pop();
-    let snip: usize = take_all(&mut args, "--snip").pop().and_then(|l| l.parse().ok()).unwrap_or(SNIPPET_CHARS);
+    let snip: usize = take_all(&mut args, "--snip")
+        .pop()
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(SNIPPET_CHARS);
     let tune = match take_all(&mut args, "--tune").pop() {
         Some(t) => Tuning::parse(&t).unwrap_or_else(|e| die(e)),
         None => Tuning::default(),
@@ -284,8 +309,10 @@ fn main() {
         if clients.is_empty() {
             die("http needs at least one --client CONFIG (each with its own token)");
         }
-        let cfgs: Vec<Config> =
-            clients.iter().map(|p| Config::load(&config::expand(p)).unwrap_or_else(|e| die(e))).collect();
+        let cfgs: Vec<Config> = clients
+            .iter()
+            .map(|p| Config::load(&config::expand(p)).unwrap_or_else(|e| die(e)))
+            .collect();
         http::run(&listen, cfgs).unwrap_or_else(|e| die(e));
         return;
     }
@@ -313,7 +340,11 @@ fn main() {
     }
 
     let t0 = Instant::now();
-    let model = if no_model { None } else { model_arg.as_deref().map(config::expand).or(cfg.model.clone()) };
+    let model = if no_model {
+        None
+    } else {
+        model_arg.as_deref().map(config::expand).or(cfg.model.clone())
+    };
     let emb = model.map(|dir| Arc::new(embed::Embedder::load(&dir).unwrap_or_else(|e| die(format!("model: {e}")))));
     let mut index = Index::with_model(cfg.dirs.clone(), cfg.exclude.clone(), tune, emb)
         .unwrap_or_else(|e| die(format!("index failed: {e}")));
@@ -337,7 +368,11 @@ fn main() {
             let t = Instant::now();
             let hits = srv.index.search(&q, limit, None).unwrap_or_else(|e| die(e));
             println!("{}", format_hits_n(&srv.index, &hits, false, snip, Some(q.as_str())));
-            eprintln!("-- {} notes indexed in {built:?}; query took {:?}", srv.index.file_count(), t.elapsed());
+            eprintln!(
+                "-- {} notes indexed in {built:?}; query took {:?}",
+                srv.index.file_count(),
+                t.elapsed()
+            );
         }
         "read" => {
             let res = srv
@@ -353,7 +388,11 @@ fn main() {
             let (Some(topic), Some(fact)) = (args.get(1), args.get(2)) else {
                 die("usage: memdex remember TOPIC FACT");
             };
-            let vault = srv.cfg.write_dir.clone().unwrap_or_else(|| die("read-only: no write dir"));
+            let vault = srv
+                .cfg
+                .write_dir
+                .clone()
+                .unwrap_or_else(|| die("read-only: no write dir"));
             match remember::remember(&vault, &srv.cfg.agent, topic, fact, None, None) {
                 Ok(m) => println!("{m}"),
                 Err(e) => die(e),
@@ -361,13 +400,24 @@ fn main() {
         }
         "tokens" => {
             // Debug: token ids + first 5 vector values, to compare with Python model2vec.
-            let dir = model_arg.as_deref().map(config::expand).or(config::default_model()).unwrap_or_else(|| die("no model"));
+            let dir = model_arg
+                .as_deref()
+                .map(config::expand)
+                .or(config::default_model())
+                .unwrap_or_else(|| die("no model"));
             let e = embed::Embedder::load(&dir).unwrap_or_else(|e| die(e));
             let t = args[1..].join(" ");
             let ids = e.token_ids(&t);
-            println!("RS {} {}", ids.len(), ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "));
+            println!(
+                "RS {} {}",
+                ids.len(),
+                ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+            );
             if let Some(v) = e.embed(&t) {
-                println!("RSV {}", v[..5].iter().map(|x| format!("{x:.5}")).collect::<Vec<_>>().join(" "));
+                println!(
+                    "RSV {}",
+                    v[..5].iter().map(|x| format!("{x:.5}")).collect::<Vec<_>>().join(" ")
+                );
             }
         }
         "bench" => bench(&mut srv, args.get(1).map(PathBuf::from), limit, snip, quiet, built),
@@ -409,7 +459,10 @@ fn bench(srv: &mut Server, cases: Option<PathBuf>, limit: usize, snip: usize, qu
                 top3 += (r < 3) as usize;
                 topk += 1;
             }
-            None => misses.push(format!("  MISS {q:?} want {want:?} got {:?}", hits.iter().take(3).map(|h| &h.file).collect::<Vec<_>>())),
+            None => misses.push(format!(
+                "  MISS {q:?} want {want:?} got {:?}",
+                hits.iter().take(3).map(|h| &h.file).collect::<Vec<_>>()
+            )),
         }
     }
     if n == 0 {
@@ -418,10 +471,21 @@ fn bench(srv: &mut Server, cases: Option<PathBuf>, limit: usize, snip: usize, qu
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let pct = |p: f64| times[((times.len() as f64 - 1.0) * p).round() as usize];
     let f = |k: usize| 100.0 * k as f64 / n as f64;
-    let ans_s = if n_ans > 0 { format!(" | ans {:.1}%", 100.0 * ans as f64 / n_ans as f64) } else { String::new() };
+    let ans_s = if n_ans > 0 {
+        format!(" | ans {:.1}%", 100.0 * ans as f64 / n_ans as f64)
+    } else {
+        String::new()
+    };
     println!(
         "n {n} | top1 {:.1}% | top3 {:.1}% | top{limit} {:.1}% | MRR {:.3}{ans_s} | p50 {:.2}ms p95 {:.2}ms | out {} ch | build {:.0}ms",
-        f(top1), f(top3), f(topk), rr / n as f64, pct(0.5), pct(0.95), bytes / n, built.as_secs_f64() * 1000.0
+        f(top1),
+        f(top3),
+        f(topk),
+        rr / n as f64,
+        pct(0.5),
+        pct(0.95),
+        bytes / n,
+        built.as_secs_f64() * 1000.0
     );
     if !quiet {
         for m in misses {
