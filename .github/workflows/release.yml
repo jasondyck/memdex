@@ -127,8 +127,8 @@ jobs:
             gh release download "$TAG" -p "memdex-$t.zip" -p "memdex-$t.zip.sha256" -D dl --clobber
             (cd dl && sha256sum -c "memdex-$t.zip.sha256")
             (cd dl && 7z x -y "memdex-$t.zip" >/dev/null)
-            "$iscc" //Q "//DAppVersion=$ver" "//DArch=$arch" "//DSrcDir=$(cygpath -w "dl/memdex-$t")" \
-              "//DOutDir=$(cygpath -w dist)" "$(cygpath -w packaging/windows/memdex.iss)"
+            "$iscc" //Q "//DAppVersion=$ver" "//DArch=$arch" "//DSrcDir=$(cygpath -wa "dl/memdex-$t")" \
+              "//DOutDir=$(cygpath -wa dist)" "$(cygpath -wa packaging/windows/memdex.iss)"
             setup="memdex-$ver-$arch-setup.exe"
             (cd dist && sha256sum "$setup" | sed 's/ \*/  /' > "$setup.sha256" && cat "$setup.sha256")
             gh release upload "$TAG" "dist/$setup" "dist/$setup.sha256" --clobber

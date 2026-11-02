@@ -46,5 +46,5 @@ jobs:
         run: |
           mkdir -p src-dir && cp target/release/memdex.exe README.md LICENSE-MIT LICENSE-APACHE src-dir/
           "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" //Q //DAppVersion=0.0.0 //DArch=x64 \
-            "//DSrcDir=$(cygpath -w src-dir)" "//DOutDir=$(cygpath -w out)" "$(cygpath -w packaging/windows/memdex.iss)"
-          pwsh -NoProfile -File packaging/windows/test-setup.ps1 -Setup "$(cygpath -w out/memdex-0.0.0-x64-setup.exe)"
+            "//DSrcDir=$(cygpath -wa src-dir)" "//DOutDir=$(cygpath -wa out)" "$(cygpath -wa packaging/windows/memdex.iss)"
+          pwsh -NoProfile -File packaging/windows/test-setup.ps1 -Setup "$(cygpath -wa out/memdex-0.0.0-x64-setup.exe)"
