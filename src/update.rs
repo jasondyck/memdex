@@ -213,6 +213,17 @@ fn replace_binary(_: &Path, _: &Path) -> Result<(), String> {
     Err("self-update isn't supported on this OS".into())
 }
 
+/// How this memdex was installed, as `memdex stats` reports it.
+pub fn install_kind(exe: &Path) -> &'static str {
+    if cfg!(unix) && exe.starts_with("/usr") {
+        "package (update with your package manager)"
+    } else if cfg!(windows) && exe.parent().is_some_and(|d| d.join("unins000.exe").exists()) {
+        "setup.exe installer"
+    } else {
+        "standalone binary (memdex update)"
+    }
+}
+
 /// Windows: remove the previous binary left behind by an update.
 pub fn cleanup_old_binary() {
     if cfg!(windows)

@@ -8,6 +8,7 @@
 //!   memdex read FILE [SECTION] [OPTS]           print a note (or matching parts)
 //!   memdex remember TOPIC FACT [OPTS]           add a fact to the shared vault
 //!   memdex update [--check] [--version vX.Y.Z]  update from GitHub releases (verified)
+//!   memdex stats [--json]  (or --stats / --about)  what is indexed: notes, transcripts, version
 //!
 //! OPTS: --config FILE | --agent NAME | --dir DIR | --write-dir DIR | --read-only
 //! Without --config: all ~/.claude/projects/*/memory dirs + ~/memory (writable).
@@ -135,6 +136,11 @@ impl Server {
                 }
             }),
         ];
+        tools.push(json!({
+            "name": "stats",
+            "description": "What memdex has indexed: notes per project, transcript files on disk vs indexed, exchanges, version. Use to answer whether something is covered.",
+            "inputSchema": {"type": "object", "properties": {}}
+        }));
         if self.cfg.write_dir.is_some() {
             tools.push(json!({
                 "name": "remember",
@@ -200,6 +206,7 @@ impl Server {
                     text
                 })
             }
+            "stats" => Ok(stats_report(self, false)),
             "remember" => {
                 let vault = self.cfg.write_dir.clone().ok_or("this agent is read-only")?;
                 let msg = remember::remember(
@@ -249,6 +256,137 @@ impl Server {
             Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": e}),
         })
     }
+}
+
+/// Resident memory of this process, where the OS exposes it cheaply.
+fn rss_mb() -> Option<f64> {
+    let s = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: f64 = s
+        .lines()
+        .find(|l| l.starts_with("VmRSS:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    Some(kb / 1024.0)
+}
+
+fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `memdex stats` / the `stats` tool: what is indexed, so "is X covered?" has an answer.
+fn stats_report(srv: &mut Server, json_out: bool) -> String {
+    let t = Instant::now();
+    let _ = srv.index.refresh();
+    let notes_ms = t.elapsed().as_secs_f64() * 1e3;
+    let exe = std::env::current_exe().ok();
+    let install = exe.as_deref().map(update::install_kind).unwrap_or("unknown");
+    let by_label = srv.index.notes_by_label();
+    let dirs_with_notes = by_label.len();
+    let hist = srv.index.history_stats();
+    let rss = rss_mb();
+    if json_out {
+        let h = hist.as_ref().map(|(h, d)| {
+            json!({"files_on_disk": h.on_disk, "files_read": h.read, "unreadable": h.unreadable,
+                   "files_with_conversation": h.with_conversation, "exchanges": h.exchanges,
+                   "bytes_scanned": h.bytes_scanned, "refresh_ms": d.as_secs_f64() * 1e3})
+        });
+        return json!({
+            "version": VERSION,
+            "binary": exe.map(|p| p.display().to_string()),
+            "install": install,
+            "agent": srv.cfg.agent,
+            "write_dir": srv.cfg.write_dir.as_ref().map(|p| p.display().to_string()),
+            "notes": {"notes": srv.index.file_count(), "sections": srv.index.section_count(),
+                      "dirs": srv.index.dir_count(), "dirs_with_notes": dirs_with_notes,
+                      "hidden_by_exclude": srv.index.hidden_count(), "refresh_ms": notes_ms,
+                      "by_project": by_label.iter().map(|(l, n)| json!({"project": l, "notes": n})).collect::<Vec<_>>()},
+            "transcripts": h,
+            "embeddings": srv.index.model_name(),
+            "rss_mb": rss,
+        })
+        .to_string();
+    }
+    let mut out = format!("memdex {VERSION} — {install}\n");
+    if let Some(e) = &exe {
+        out.push_str(&format!("  binary      {}\n", e.display()));
+    }
+    out.push_str(&format!(
+        "  agent       {} · remember {}\n",
+        srv.cfg.agent,
+        srv.cfg
+            .write_dir
+            .as_ref()
+            .map_or("off".into(), |p| format!("→ {}", p.display()))
+    ));
+    out.push_str(&format!(
+        "  notes       {} notes ({} sections) in {} of {} dirs{}\n",
+        srv.index.file_count(),
+        srv.index.section_count(),
+        dirs_with_notes,
+        srv.index.dir_count(),
+        match srv.index.hidden_count() {
+            0 => String::new(),
+            n => format!(" · {n} hidden by exclude"),
+        }
+    ));
+    let top: Vec<String> = by_label.iter().take(8).map(|(l, n)| format!("{l} {n}")).collect();
+    if !top.is_empty() {
+        let more = by_label.len().saturating_sub(8);
+        out.push_str(&format!(
+            "              {}{}\n",
+            top.join(" · "),
+            if more > 0 {
+                format!(" · +{more} more")
+            } else {
+                String::new()
+            }
+        ));
+    }
+    match &hist {
+        Some((h, d)) => {
+            out.push_str(&format!(
+                "  transcripts {} files on disk · {} read{} · {} with conversation · {} exchanges\n",
+                h.on_disk,
+                h.read,
+                if h.unreadable > 0 {
+                    format!(" ({} unreadable)", h.unreadable)
+                } else {
+                    String::new()
+                },
+                h.with_conversation,
+                thousands(h.exchanges as u64)
+            ));
+            out.push_str(&format!(
+                "              {:.0} MB scanned · refreshed in {:.0} ms{}\n",
+                h.bytes_scanned as f64 / 1e6,
+                d.as_secs_f64() * 1e3,
+                if h.on_disk == h.read {
+                    " · all files indexed"
+                } else {
+                    ""
+                }
+            ));
+        }
+        None => out.push_str("  transcripts off (enable with the `transcripts` config directive or --transcripts)\n"),
+    }
+    out.push_str(&format!(
+        "  embeddings  {}\n",
+        srv.index.model_name().unwrap_or_else(|| "off".into())
+    ));
+    if let Some(r) = rss {
+        out.push_str(&format!("  memory      {r:.0} MB RSS\n"));
+    }
+    out.trim_end().to_string()
 }
 
 fn serve_stdio(mut srv: Server) -> io::Result<()> {
@@ -345,7 +483,12 @@ fn main() {
         Some(t) => Tuning::parse(&t).unwrap_or_else(|e| die(e)),
         None => Tuning::default(),
     };
-    let cmd = args.first().cloned().unwrap_or_else(|| "serve".into());
+    let json_out = take_flag(&mut args, "--json");
+    let cmd = match args.first().map(String::as_str) {
+        Some("--stats" | "--about" | "about") => "stats".to_string(),
+        Some(c) => c.to_string(),
+        None => "serve".into(),
+    };
 
     if cmd == "http" {
         if clients.is_empty() {
@@ -473,6 +616,7 @@ fn main() {
                 );
             }
         }
+        "stats" => println!("{}", stats_report(&mut srv, json_out)),
         "bench" => bench(
             &mut srv,
             args.get(1).map(PathBuf::from),
@@ -482,7 +626,7 @@ fn main() {
             built,
             source,
         ),
-        _ => die("usage: memdex [serve|http|search|read|remember|update|bench] … (see source header)"),
+        _ => die("usage: memdex [serve|http|search|read|remember|update|stats|bench] … (see source header)"),
     }
 }
 

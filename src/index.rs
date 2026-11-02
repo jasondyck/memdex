@@ -145,6 +145,7 @@ pub struct Index {
     emb: Option<Arc<Embedder>>,
     /// Pick up newly created ~/.claude/projects/*/memory dirs on every refresh.
     pub watch_claude: bool,
+    hidden: usize,
     /// Claude Code session transcripts, indexed separately; `None` = disabled.
     /// Built lazily on the first history search, then updated incrementally.
     pub hist: Option<Transcripts>,
@@ -176,6 +177,7 @@ impl Index {
             emb,
             vecs: HashMap::new(),
             watch_claude: false,
+            hidden: 0,
             hist: None,
         };
         idx.refresh()?;
@@ -198,9 +200,11 @@ impl Index {
             .any(|e| e == stem || *e == format!("{label}/{stem}"))
     }
 
-    /// Every visible `*.md` note in the configured directories (non-recursive).
-    fn files(&self) -> Vec<(PathBuf, SystemTime)> {
+    /// Every visible `*.md` note in the configured directories (non-recursive), and
+    /// how many were hidden by `exclude`.
+    fn files(&self) -> (Vec<(PathBuf, SystemTime)>, usize) {
         let mut out = Vec::new();
+        let mut hidden = 0;
         for (dir, label) in &self.dirs {
             let Ok(rd) = fs::read_dir(dir) else { continue };
             for e in rd.flatten() {
@@ -214,6 +218,7 @@ impl Index {
                     continue;
                 }
                 if self.excluded(label, &stem(&p)) {
+                    hidden += 1;
                     continue;
                 }
                 if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
@@ -221,7 +226,7 @@ impl Index {
                 }
             }
         }
-        out
+        (out, hidden)
     }
 
     /// Re-index files that were added, changed or removed since the last call.
@@ -233,7 +238,9 @@ impl Index {
                 }
             }
         }
-        let current: HashMap<PathBuf, SystemTime> = self.files().into_iter().collect();
+        let (list, hidden) = self.files();
+        self.hidden = hidden;
+        let current: HashMap<PathBuf, SystemTime> = list.into_iter().collect();
         let mut changed = 0;
         let removed: Vec<PathBuf> = self
             .seen
@@ -282,6 +289,42 @@ impl Index {
 
     pub fn file_count(&self) -> usize {
         self.seen.len()
+    }
+
+    /// Notes per label (project), most first.
+    pub fn notes_by_label(&self) -> Vec<(String, usize)> {
+        let mut m: HashMap<String, usize> = HashMap::new();
+        for p in self.seen.keys() {
+            *m.entry(self.label_of(p)).or_default() += 1;
+        }
+        let mut v: Vec<(String, usize)> = m.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
+    pub fn model_name(&self) -> Option<String> {
+        self.emb.as_ref().map(|e| e.name.clone())
+    }
+
+    pub fn section_count(&self) -> usize {
+        self.fts.len()
+    }
+
+    pub fn dir_count(&self) -> usize {
+        self.dirs.len()
+    }
+
+    /// Notes skipped because of `exclude` at the last refresh.
+    pub fn hidden_count(&self) -> usize {
+        self.hidden
+    }
+
+    /// Bring the history index up to date and describe it (None if disabled).
+    pub fn history_stats(&mut self) -> Option<(crate::transcripts::HistStats, std::time::Duration)> {
+        let hist = self.hist.as_mut()?;
+        let t = std::time::Instant::now();
+        hist.refresh(&crate::config::claude_project_dirs());
+        Some((hist.stats(), t.elapsed()))
     }
 
     /// Hybrid search: BM25 over words (+ trigram fallback for identifiers like IPs),

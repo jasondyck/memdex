@@ -141,6 +141,11 @@ impl Fts {
         self.live -= 1;
     }
 
+    /// Distinct source files with at least one live section.
+    pub fn path_count(&self) -> usize {
+        self.by_path.values().filter(|v| !v.is_empty()).count()
+    }
+
     pub fn len(&self) -> usize {
         self.live
     }

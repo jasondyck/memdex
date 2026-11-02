@@ -55,6 +55,20 @@ pub struct Transcripts {
     files: HashMap<PathBuf, FileState>,
     /// `.claude/projects/<dir>` → project label (same labels as the memory notes).
     labels: HashMap<PathBuf, String>,
+    /// Transcript files seen on disk at the last refresh.
+    on_disk: usize,
+    /// Files that couldn't be opened (permissions, races with deletion).
+    unreadable: std::collections::HashSet<PathBuf>,
+}
+
+/// What the history index holds, for `memdex stats`.
+pub struct HistStats {
+    pub on_disk: usize,
+    pub read: usize,
+    pub unreadable: usize,
+    pub with_conversation: usize,
+    pub exchanges: usize,
+    pub bytes_scanned: u64,
 }
 
 fn strip_tags(text: &str) -> String {
@@ -157,6 +171,7 @@ impl Transcripts {
                 }
             }
         }
+        self.on_disk = present.len();
         let keep: std::collections::HashSet<&PathBuf> = present.iter().map(|(p, _)| p).collect();
         let gone: Vec<PathBuf> = self.files.keys().filter(|p| !keep.contains(p)).cloned().collect();
         for p in gone {
@@ -189,7 +204,11 @@ impl Transcripts {
             .map(|s| s.to_string_lossy().chars().take(8).collect::<String>())
             .unwrap_or_default();
         let key = path.to_string_lossy().into_owned();
-        let Ok(mut f) = File::open(path) else { return };
+        let Ok(mut f) = File::open(path) else {
+            self.unreadable.insert(path.to_path_buf());
+            return;
+        };
+        self.unreadable.remove(path);
         let st = self.files.get_mut(path).expect("state exists");
         if f.seek(SeekFrom::Start(st.offset)).is_err() {
             return;
@@ -274,6 +293,17 @@ impl Transcripts {
 
     pub fn sessions(&self) -> usize {
         self.files.len()
+    }
+
+    pub fn stats(&self) -> HistStats {
+        HistStats {
+            on_disk: self.on_disk,
+            read: self.files.len() - self.unreadable.len(),
+            unreadable: self.unreadable.len(),
+            with_conversation: self.fts.path_count(),
+            exchanges: self.fts.len(),
+            bytes_scanned: self.files.values().map(|s| s.offset).sum(),
+        }
     }
 
     pub fn exchanges(&self) -> usize {

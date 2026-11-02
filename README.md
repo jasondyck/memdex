@@ -28,6 +28,7 @@ note per result list. Snippets are query-focused: the lines with the most query 
 |---|---|
 | `search {query, limit?, project?, full?, source?}` | top 3 notes as `[id] project/file › heading` + the lines matching the query (≤1200 chars each) |
 | `read {id}` / `read {file, section?, project?}` | one section, a note, or just the parts mentioning `section` |
+| `stats {}` | what is indexed: notes per project, transcript files on disk vs read, exchanges, version |
 | `remember {topic, fact, description?, type?}` | append a dated, agent-tagged bullet to `~/memory/<topic>.md` (only when the agent has a write dir) |
 
 `remember` refuses credential-looking text (known token prefixes, `password=`/`?token=` values,
@@ -72,6 +73,7 @@ memdex search ci cache key
 memdex read build-cache gotcha
 memdex remember build-cache "Cache is now keyed on the lockfile hash" --agent me
 memdex update [--check] [--version vX.Y.Z]
+memdex stats [--json]          # also --stats / --about
 memdex bench bench/example/cases.tsv --dir bench/example/notes
 ```
 
@@ -184,6 +186,22 @@ The script picks your architecture, verifies the SHA-256 checksum and installs t
 `~/.local/bin` (`MEMDEX_VERSION=v0.4.1` pins a release, `MEMDEX_BIN_DIR` changes the location).
 Prefer not to pipe to `sh`? Download `memdex-<arch>-unknown-linux-musl.tar.gz` and its `.sha256`
 from the release page, run `sha256sum -c`, and copy `memdex` onto your PATH.
+
+### Checking what's indexed
+```text
+$ memdex stats
+memdex 0.6.1 — standalone binary (memdex update)
+  binary      ~/.local/bin/memdex
+  agent       claude · remember → ~/memory
+  notes       149 notes (396 sections) in 25 of 46 dirs
+              home 83 · projects-webshop 8 · …
+  transcripts 220 files on disk · 220 read · 212 with conversation · 1,425 exchanges
+              514 MB scanned · refreshed in 413 ms · all files indexed
+  embeddings  off
+  memory      18 MB RSS
+```
+Files "with conversation" excludes sessions that only ran commands. `--json` for scripts; the same
+report is the `stats` MCP tool, so an agent can answer "is X indexed?" itself.
 
 ### Updating
 ```sh
