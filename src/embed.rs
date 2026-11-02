@@ -60,10 +60,7 @@ impl Embedder {
         if data.len() != rows * dim * 4 {
             return Err(err(&"tensor size mismatch"));
         }
-        let table: Vec<f32> = data
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-            .collect();
+        let table: Vec<f32> = data.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
 
         // --- tokenizer.json (HF tokenizers, WordPiece + BertNormalizer).
         let tok: Value =
