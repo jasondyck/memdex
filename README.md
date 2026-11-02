@@ -13,8 +13,10 @@ dependency (`serde_json`). Optional static embeddings with no extra crates.
 
 Index lives in RAM: a small inverted index (`src/fts.rs`) that reproduces SQLite FTS5's
 `porter unicode61` tokenizer and BM25 exactly (weighted name 4 / heading 3 / hidden
-note-description 1 / body 1), plus case-insensitive substring search for exact identifiers
-(IPs, hostnames). It replaced SQLite in 0.5; see "Pure-Rust index" below for the parity checks.
+note-description 1 / body 1), plus case-insensitive substring search for exact identifiers.
+Queries containing an identifier (IP, `host.domain`, `:port`, `user@host`) rank exact matches
+first, since the word index would split `192.0.2.10` into tokens that match everywhere. It
+replaced SQLite in 0.5; see "Pure-Rust index" below for the parity checks.
 Every call re-stats the files and re-indexes only what changed, so results are never stale.
 Notes are chunked by heading, splitting only sections over 4000 chars; at most 2 sections per
 note per result list. Snippets are query-focused: the lines with the most query words, in order.
@@ -102,6 +104,11 @@ version on the same private corpus:
    faster (p50 0.97 → 0.22 ms), startup ~2× faster, RSS 12.4 → 6 MB, binary 3.1 → 1 MB, and a clean
    release build takes 3.4 s instead of 46 s. Static musl binaries link with Rust's bundled
    `rust-lld` (`.cargo/config.toml`), so no musl toolchain is needed and aarch64 cross-builds from x86.
+
+Also in 0.5: identifier-first ranking. On 216 lookups generated from every IP / hostname / port in
+the corpus, top-1 rose from 85% to 95% and top-3 from 97% to 100%, with no change on the other
+question sets (an earlier, broader rule that also caught versions like `7.1` and paths cost 3
+questions there and was narrowed).
 
 ## Static embeddings (opt-in, off by default)
 `embed.rs` loads Model2Vec "potion" models (static token→vector tables, no neural net at

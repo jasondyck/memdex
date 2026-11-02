@@ -32,6 +32,8 @@ pub struct Tuning {
     pub wc: f64,
     /// Snippets show the lines that match the query instead of the section start.
     pub focus: bool,
+    /// Rank exact identifier matches (IPs, hostnames, ports) ahead of word matches.
+    pub ident: bool,
     /// Weight of the embedding ranking in reciprocal-rank fusion with BM25 (0 = off).
     pub sem: f64,
     /// RRF constant k: higher flattens rank differences.
@@ -56,6 +58,7 @@ impl Default for Tuning {
             target_chunk: 3000,
             wc: 1.0,
             focus: true,
+            ident: true,
             sem: 0.0,
             rrf: 60.0,
             pass: 400,
@@ -82,6 +85,7 @@ impl Tuning {
                 ("chunk", 2) => (t.max_chunk, t.target_chunk) = (nums[0] as usize, nums[1] as usize),
                 ("wc", 1) => t.wc = nums[0],
                 ("focus", 1) => t.focus = b,
+                ("ident", 1) => t.ident = b,
                 ("sem", 1) => t.sem = nums[0],
                 ("rrf", 1) => t.rrf = nums[0],
                 ("pass", 1) => t.pass = nums[0] as usize,
@@ -264,7 +268,22 @@ impl Index {
         self.refresh()?;
         let phrases = query_phrases(query, self.tune.prefix, self.tune.stop);
         let ((wf, wh, wb), wc) = (self.tune.w, self.tune.wc);
-        let mut bm: Vec<i64> = self.fts.search(&phrases, [wf, wh, wc, wb], project, POOL);
+        // Identifiers (IPs, hostnames, paths, ports) first, matched exactly: the word
+        // index splits `192.0.2.10` into common tokens like `10` that match everywhere.
+        let idents: Vec<String> = substring_terms(query)
+            .into_iter()
+            .filter(|t| is_identifier(t))
+            .collect();
+        let mut bm: Vec<i64> = if self.tune.ident && !idents.is_empty() {
+            self.fts.substring(&idents, project, POOL)
+        } else {
+            Vec::new()
+        };
+        for id in self.fts.search(&phrases, [wf, wh, wc, wb], project, POOL) {
+            if !bm.contains(&id) {
+                bm.push(id);
+            }
+        }
         if bm.len() < limit {
             for id in self.fts.substring(&substring_terms(query), project, POOL) {
                 if !bm.contains(&id) {
@@ -443,6 +462,35 @@ pub fn query_phrases(q: &str, prefix: bool, stop: bool) -> Vec<Phrase> {
             prefix,
         })
         .collect()
+}
+
+/// Clearly identifier-shaped (matched exactly, ahead of word matches): IPs and other
+/// dotted names with 3+ parts, `name.tld`, ports (`:8080`, `host:8080`), `user@host`.
+/// Versions (`7.1`), short paths and snake_case stay with the word index, which
+/// handles them better (measured on the bench sets).
+pub fn is_identifier(t: &str) -> bool {
+    let t = t.trim_end_matches(|c: char| !c.is_alphanumeric());
+    if let Some((host, port)) = t.rsplit_once(':')
+        && port.len() >= 2
+        && port.chars().all(|c| c.is_ascii_digit())
+    {
+        return host.is_empty() || host.chars().any(|c| c.is_alphanumeric());
+    }
+    if t.contains('@') && t.contains('.') {
+        return true;
+    }
+    let parts: Vec<&str> = t.split('.').collect();
+    match parts.len() {
+        0 | 1 => false,
+        2 => {
+            parts[0].chars().any(|c| c.is_alphabetic())
+                && (2..=6).contains(&parts[1].len())
+                && parts[1].chars().all(|c| c.is_ascii_alphabetic())
+        }
+        _ => parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '-')),
+    }
 }
 
 /// Raw whitespace-separated terms (≥3 chars) for substring search, so
@@ -758,6 +806,31 @@ mod tests {
         assert_eq!(terms, ["port", "grafana", "run"]);
         assert!(p.iter().all(|x| x.prefix));
         assert_eq!(substring_terms("what is 203.0.113.7?"), ["203.0.113.7"]);
+        for id in [
+            "203.0.113.7",
+            "host.example.net",
+            ":8080",
+            "db:5432",
+            "example.com",
+            "me@example.com",
+            "1.2.3",
+        ] {
+            assert!(is_identifier(id), "{id}");
+        }
+        for w in [
+            "build-cache",
+            "port",
+            "v2",
+            "what",
+            "7.1",
+            "2.2",
+            "/mnt/y",
+            "snake_case",
+            "e.g",
+            "x.",
+        ] {
+            assert!(!is_identifier(w), "{w}");
+        }
         assert!(query_phrases("the of is", true, true).is_empty());
     }
 
